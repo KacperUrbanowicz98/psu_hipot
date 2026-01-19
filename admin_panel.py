@@ -312,14 +312,211 @@ class AdminPanel:
         general_frame = tk.Frame(self.notebook, bg=self.config.COLOR_WHITE)
         self.notebook.add(general_frame, text="Ustawienia ogólne")
 
-        info_label = tk.Label(
-            general_frame,
-            text="Tutaj będą ustawienia ogólne aplikacji",
+        # Główna ramka z paddingiem
+        main_content = tk.Frame(general_frame, bg=self.config.COLOR_WHITE)
+        main_content.pack(expand=True, fill=tk.BOTH, padx=30, pady=20)
+
+        # ========== SEKCJA RS232 ==========
+        rs232_label = tk.Label(
+            main_content,
+            text="Ustawienia komunikacji RS232 (Chroma Hi-Pot)",
             bg=self.config.COLOR_WHITE,
-            fg="#666666",
-            font=("Arial", 11)
+            fg=self.config.COLOR_PRIMARY,
+            font=("Arial", 13, "bold")
         )
-        info_label.pack(pady=50)
+        rs232_label.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 15))
+
+        # Port COM
+        tk.Label(
+            main_content,
+            text="Port COM:",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        ).grid(row=1, column=0, sticky='w', pady=8, padx=(20, 10))
+
+        self.com_port_var = tk.StringVar(value=self.config.DEFAULT_COM_PORT)
+        com_port_combo = ttk.Combobox(
+            main_content,
+            textvariable=self.com_port_var,
+            values=["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"],
+            state="readonly",
+            width=15,
+            font=("Arial", 10)
+        )
+        com_port_combo.grid(row=1, column=1, sticky='w', pady=8)
+
+        # Baud Rate
+        tk.Label(
+            main_content,
+            text="Baud Rate:",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        ).grid(row=2, column=0, sticky='w', pady=8, padx=(20, 10))
+
+        self.baudrate_var = tk.StringVar(value=str(self.config.DEFAULT_BAUDRATE))
+        baudrate_combo = ttk.Combobox(
+            main_content,
+            textvariable=self.baudrate_var,
+            values=["300", "600", "1200", "2400", "4800", "9600", "19200"],
+            state="readonly",
+            width=15,
+            font=("Arial", 10)
+        )
+        baudrate_combo.grid(row=2, column=1, sticky='w', pady=8)
+
+        # Parity
+        tk.Label(
+            main_content,
+            text="Parity:",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        ).grid(row=3, column=0, sticky='w', pady=8, padx=(20, 10))
+
+        self.parity_var = tk.StringVar(value=self.config.DEFAULT_PARITY)
+        parity_combo = ttk.Combobox(
+            main_content,
+            textvariable=self.parity_var,
+            values=["NONE", "EVEN", "ODD"],
+            state="readonly",
+            width=15,
+            font=("Arial", 10)
+        )
+        parity_combo.grid(row=3, column=1, sticky='w', pady=8)
+
+        # Flow Control
+        tk.Label(
+            main_content,
+            text="Flow Control:",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        ).grid(row=4, column=0, sticky='w', pady=8, padx=(20, 10))
+
+        self.flow_control_var = tk.StringVar(value=self.config.DEFAULT_FLOW_CONTROL)
+        flow_combo = ttk.Combobox(
+            main_content,
+            textvariable=self.flow_control_var,
+            values=["NONE", "SOFTWARE"],
+            state="readonly",
+            width=15,
+            font=("Arial", 10)
+        )
+        flow_combo.grid(row=4, column=1, sticky='w', pady=8)
+
+        # Separator
+        separator = tk.Frame(main_content, bg="#cccccc", height=2)
+        separator.grid(row=5, column=0, columnspan=2, sticky='ew', pady=20)
+
+        # ========== SEKCJA INNE USTAWIENIA ==========
+        other_label = tk.Label(
+            main_content,
+            text="Inne ustawienia",
+            bg=self.config.COLOR_WHITE,
+            fg=self.config.COLOR_PRIMARY,
+            font=("Arial", 13, "bold")
+        )
+        other_label.grid(row=6, column=0, columnspan=2, sticky='w', pady=(0, 15))
+
+        # Automatyczny zapis wyników
+        tk.Label(
+            main_content,
+            text="Automatyczny zapis wyników:",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        ).grid(row=7, column=0, sticky='w', pady=8, padx=(20, 10))
+
+        self.auto_save_var = tk.BooleanVar(value=True)
+        auto_save_check = tk.Checkbutton(
+            main_content,
+            variable=self.auto_save_var,
+            bg=self.config.COLOR_WHITE,
+            activebackground=self.config.COLOR_WHITE
+        )
+        auto_save_check.grid(row=7, column=1, sticky='w', pady=8)
+
+        # Timeout testu (sekundy)
+        tk.Label(
+            main_content,
+            text="Timeout testu (s):",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        ).grid(row=8, column=0, sticky='w', pady=8, padx=(20, 10))
+
+        self.timeout_var = tk.StringVar(value="300")
+        timeout_entry = tk.Entry(
+            main_content,
+            textvariable=self.timeout_var,
+            width=17,
+            font=("Arial", 10)
+        )
+        timeout_entry.grid(row=8, column=1, sticky='w', pady=8)
+
+        # Przycisk testowy połączenia
+        test_connection_btn = tk.Button(
+            main_content,
+            text="Testuj połączenie RS232",
+            bg=self.config.COLOR_PRIMARY,
+            fg=self.config.COLOR_WHITE,
+            font=("Arial", 10, "bold"),
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=self.test_rs232_connection
+        )
+        test_connection_btn.grid(row=9, column=0, columnspan=2, pady=25, sticky='w', padx=20)
+
+        # Status połączenia
+        self.connection_status_label = tk.Label(
+            main_content,
+            text="",
+            bg=self.config.COLOR_WHITE,
+            font=("Arial", 10)
+        )
+        self.connection_status_label.grid(row=10, column=0, columnspan=2, sticky='w', padx=20)
+
+    def test_rs232_connection(self):
+        """Testuje połączenie z urządzeniem Hi-Pot przez RS232"""
+        from hipot_device import ChromaHiPotDevice
+
+        self.connection_status_label.config(
+            text="Testowanie połączenia...",
+            fg="#FF9800"
+        )
+        self.window.update()
+
+        try:
+            # Stwórz urządzenie z ustawieniami z panelu
+            device = ChromaHiPotDevice(
+                port=self.com_port_var.get(),
+                baudrate=int(self.baudrate_var.get())
+            )
+
+            # Próba połączenia
+            if device.connect():
+                self.connection_status_label.config(
+                    text="✓ Połączenie udane!",
+                    fg=self.config.COLOR_ACCENT
+                )
+                device.disconnect()
+                messagebox.showinfo("Sukces", "Połączenie z urządzeniem Hi-Pot zostało nawiązane pomyślnie!")
+            else:
+                self.connection_status_label.config(
+                    text="✗ Błąd połączenia!",
+                    fg=self.config.COLOR_ERROR
+                )
+                messagebox.showerror("Błąd",
+                                     "Nie udało się połączyć z urządzeniem Hi-Pot.\nSprawdź ustawienia i połączenie.")
+
+        except Exception as e:
+            self.connection_status_label.config(
+                text=f"✗ Błąd: {str(e)}",
+                fg=self.config.COLOR_ERROR
+            )
+            messagebox.showerror("Błąd", f"Wystąpił błąd podczas testowania połączenia:\n{str(e)}")
 
     def create_buttons(self):
         """Tworzy przyciski akcji na dole okna"""
@@ -354,5 +551,16 @@ class AdminPanel:
 
     def save_changes(self):
         """Zapisuje zmiany konfiguracji"""
-        # TODO: Implementacja zapisu do pliku
-        messagebox.showinfo("Zapisano", "Konfiguracja została zapisana!")
+        try:
+            # Zapisz ustawienia RS232
+            self.config.DEFAULT_COM_PORT = self.com_port_var.get()
+            self.config.DEFAULT_BAUDRATE = int(self.baudrate_var.get())
+            self.config.DEFAULT_PARITY = self.parity_var.get()
+            self.config.DEFAULT_FLOW_CONTROL = self.flow_control_var.get()
+
+            # TODO: Zapis do pliku konfiguracyjnego
+            # Na razie tylko w pamięci, później dodamy zapis do JSON
+
+            messagebox.showinfo("Zapisano", "Konfiguracja została zapisana!")
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się zapisać konfiguracji:\n{str(e)}")

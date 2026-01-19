@@ -22,6 +22,14 @@ class Config:
     DEFAULT_DURATION = 60
     DEFAULT_CURRENT_LIMIT = 5.0
 
+    # Ustawienia komunikacji RS232
+
+    DEFAULT_COM_PORT = "COM1"
+    DEFAULT_BAUDRATE = 9600
+    DEFAULT_PARITY = "NONE"
+    DEFAULT_FLOW_CONTROL = "NONE"
+
+
     # Autoryzowani użytkownicy (HRID)
     AUTHORIZED_USERS = [
         "44963", "12100667", "81705", "45216", "45061", "12100171",
