@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from config import Config
 from models import PowerSupplyModels
+from admin_panel import AdminPanel
 
 
 class HiPotTesterApp:
@@ -174,6 +175,138 @@ class HiPotTesterApp:
 
         # Stopka
         self.create_footer()
+
+        # Binding dla konfiguracji: Ctrl+Alt+D (3x)
+        self.d_press_count = 0
+        self.d_press_timer = None
+        self.root.bind('<Control-Alt-d>', self.on_config_shortcut)
+        self.root.bind('<Control-Alt-D>', self.on_config_shortcut)
+
+    def on_config_shortcut(self, event):
+        """Obsługa skrótu do konfiguracji (Ctrl+Alt+D 3x)"""
+        self.d_press_count += 1
+
+        # Anuluj poprzedni timer
+        if self.d_press_timer:
+            self.root.after_cancel(self.d_press_timer)
+
+        # Reset licznika po 1 sekundzie
+        self.d_press_timer = self.root.after(1000, self.reset_d_counter)
+
+        # Po 3 naciśnięciach otwórz okno hasła
+        if self.d_press_count >= 3:
+            self.d_press_count = 0
+            self.show_password_dialog()
+
+    def reset_d_counter(self):
+        """Resetuje licznik naciśnięć D"""
+        self.d_press_count = 0
+
+    def show_password_dialog(self):
+        """Wyświetla dialog do wprowadzenia hasła"""
+        password_window = tk.Toplevel(self.root)
+        password_window.title("Dostęp do konfiguracji")
+        password_window.geometry("400x200")
+        password_window.configure(bg=self.config.COLOR_BG)
+        password_window.resizable(False, False)
+
+        # Wycentruj okno
+        password_window.transient(self.root)
+        password_window.grab_set()
+
+        # Ramka główna
+        frame = tk.Frame(password_window, bg=self.config.COLOR_WHITE, relief=tk.RAISED, borderwidth=2)
+        frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+
+        # Tytuł
+        title_label = tk.Label(
+            frame,
+            text="Dostęp do konfiguracji",
+            bg=self.config.COLOR_WHITE,
+            fg=self.config.COLOR_PRIMARY,
+            font=("Arial", 14, "bold")
+        )
+        title_label.pack(pady=(20, 10))
+
+        # Etykieta hasła
+        password_label = tk.Label(
+            frame,
+            text="Wprowadź hasło:",
+            bg=self.config.COLOR_WHITE,
+            fg="#333333",
+            font=("Arial", 11)
+        )
+        password_label.pack(pady=(10, 5))
+
+        # Pole hasła
+        password_entry = tk.Entry(
+            frame,
+            font=("Arial", 12),
+            width=20,
+            justify='center',
+            show="*",
+            relief=tk.SOLID,
+            borderwidth=2
+        )
+        password_entry.pack(pady=10)
+        password_entry.focus()
+
+        # Etykieta błędu
+        error_label = tk.Label(
+            frame,
+            text="",
+            bg=self.config.COLOR_WHITE,
+            fg=self.config.COLOR_ERROR,
+            font=("Arial", 9)
+        )
+        error_label.pack()
+
+        def check_password():
+            if password_entry.get() == "reconext2026":
+                password_window.destroy()
+                self.show_config_window()
+            else:
+                error_label.config(text="Nieprawidłowe hasło!")
+                password_entry.delete(0, tk.END)
+                password_entry.focus()
+
+        # Bind Enter
+        password_entry.bind('<Return>', lambda e: check_password())
+
+        # Przyciski
+        button_frame = tk.Frame(frame, bg=self.config.COLOR_WHITE)
+        button_frame.pack(pady=(10, 20))
+
+        ok_button = tk.Button(
+            button_frame,
+            text="OK",
+            bg=self.config.COLOR_ACCENT,
+            fg=self.config.COLOR_WHITE,
+            font=("Arial", 10, "bold"),
+            width=10,
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=check_password
+        )
+        ok_button.pack(side=tk.LEFT, padx=5)
+
+        cancel_button = tk.Button(
+            button_frame,
+            text="Anuluj",
+            bg="#999999",
+            fg=self.config.COLOR_WHITE,
+            font=("Arial", 10, "bold"),
+            width=10,
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=password_window.destroy
+        )
+        cancel_button.pack(side=tk.LEFT, padx=5)
+
+    def show_config_window(self):
+        """Wyświetla okno konfiguracji"""
+        admin_panel = AdminPanel(self.root, self.config)
+        admin_panel.show()
 
     def create_scan_panel(self, parent):
         """Tworzy panel skanowania numeru seryjnego"""
