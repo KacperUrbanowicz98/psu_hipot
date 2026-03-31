@@ -418,7 +418,8 @@ class HiPotTesterApp:
             self.config,
             serial,
             model_info,
-            self.current_user
+            self.current_user,
+            app_ref = self
         )
         test_screen.show()
 
@@ -467,6 +468,24 @@ class HiPotTesterApp:
             fg=self.config.COLOR_WHITE,
             font=("Arial", 10, "bold")
         ).pack(side=tk.RIGHT, padx=20, pady=10)
+
+    def show_scan_screen(self):
+        """Powrót do ekranu skanowania S/N"""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+        self.create_header()
+
+        main_frame = tk.Frame(self.root, bg=self.config.COLOR_BG)
+        main_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=(20, 60))
+
+        self.create_scan_panel(main_frame)
+        self.create_footer()
+
+        self.d_press_count = 0
+        self.d_press_timer = None
+        self.root.bind('<Control-Alt-d>', self.on_config_shortcut)
+        self.root.bind('<Control-Alt-D>', self.on_config_shortcut)
 
     def logout(self):
         self.current_user = None

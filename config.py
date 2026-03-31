@@ -6,11 +6,11 @@ Konfiguracja aplikacji
 
 class Config:
     # Kolory z logo Reconext
-    COLOR_PRIMARY = "#375ea9"  # Niebieski główny
-    COLOR_ACCENT = "#4CAF50"  # Zielony akcent
-    COLOR_BG = "#f5f5f5"  # Tło
+    COLOR_PRIMARY = "#375ea9"
+    COLOR_ACCENT = "#4CAF50"
+    COLOR_BG = "#f5f5f5"
     COLOR_WHITE = "#FFFFFF"
-    COLOR_ERROR = "#f44336"  # Czerwony dla błędów
+    COLOR_ERROR = "#f44336"
 
     # Ustawienia okna
     WINDOW_WIDTH = 1000
@@ -23,14 +23,10 @@ class Config:
     DEFAULT_CURRENT_LIMIT = 5.0
 
     # Ustawienia komunikacji RS232
-
     DEFAULT_COM_PORT = "COM6"
     DEFAULT_BAUDRATE = 9600
     DEFAULT_PARITY = "NONE"
     DEFAULT_FLOW_CONTROL = "NONE"
-
-    # Tryb symulacji (bez fizycznego urządzenia)
-    SIMULATION_MODE = False  # Zmień na False gdy podłączysz Hi-Pot
 
     # Autoryzowani użytkownicy (HRID)
     AUTHORIZED_USERS = [
