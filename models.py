@@ -9,41 +9,282 @@ class PowerSupplyModels:
 
     MODELS = {
         "PSU-000019-00": {
-            "name": "PSU-000019-00 (SSW-3503UK)",
-            "identifier": "SSW-3503UK",
-            "description": "Zasilacz SSW-3503UK",
+            "name": "PSU-000019-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-000019-00",
+            "serial_length": [10, 21],
             "test_params": {
-                "mode": "AC",  # Tryb testu AC
-                "voltage": 3000,  # Napięcie testowe 3000V AC RMS
-                "voltage_tolerance": 50,  # Tolerancja +/- 50V
-                "current_limit_high": 2.5,  # Górny limit prądu 2.5mA
-                "current_limit_low": 0.3,  # Dolny limit prądu 0.3mA
-                "ramp_time": 0.5,  # Czas narastania 0.5s
-                "test_time": 3.0,  # Czas testu 3.0s
-                "fall_time": 0.5,  # Czas opadania 0.5s
-                "frequency": 50,  # Częstotliwość 50Hz (AC)
-                "arc_detection": 0.0  # ARC detection (domyślnie wyłączone)
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.3,
+                "ramp_time": 0.5,
+                "test_time": 1.0,
+                "fall_time": 0.5,
+                "frequency": 50,
+                "arc_detection": 0.0
             }
         },
-        # TODO: Dodać kolejne modele
+        "PSU-000033": {
+            "name": "PSU-000033",
+            "identifier": "",
+            "description": "Zasilacz PSU-000033",
+            "serial_length": 21,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.15,
+                "ramp_time": 0.5,
+                "test_time": 1.0,
+                "fall_time": 0.5,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "PSU-000013-00": {
+            "name": "PSU-000013-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-000013-00",
+            "serial_length": [10, 21],
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.15,
+                "ramp_time": 0.5,
+                "test_time": 1.0,
+                "fall_time": 0.5,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "PSU-000016-00": {
+            "name": "PSU-000016-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-000016-00",
+            "serial_length": [10, 21],
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.15,
+                "ramp_time": 0.5,
+                "test_time": 1.0,
+                "fall_time": 0.5,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "PSU-00007-00": {
+            "name": "PSU-00007-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-00007-00",
+            "serial_length": [9, 10],
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.3,
+                "ramp_time": 0.0,
+                "test_time": 1.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "PSU-00008-00": {
+            "name": "PSU-00008-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-00008-00",
+            "serial_length": 10,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.3,
+                "ramp_time": 0.0,
+                "test_time": 1.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "PSU-00006-00": {
+            "name": "PSU-00006-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-00006-00",
+            "serial_length": 10,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.3,
+                "ramp_time": 0.0,
+                "test_time": 1.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "PSU-00005-00": {
+            "name": "PSU-00005-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-00005-00",
+            "serial_length": 12,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3300,
+                "voltage_tolerance": 50,
+                "current_limit_high": 10.0,
+                "current_limit_low": 0.01,
+                "ramp_time": 0.1,
+                "test_time": 3.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 10.0
+            }
+        },
+        "PSU-00003-00": {
+            "name": "PSU-00003-00",
+            "identifier": "",
+            "description": "Zasilacz PSU-00003-00",
+            "serial_length": 10,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3000,
+                "voltage_tolerance": 50,
+                "current_limit_high": 2.5,
+                "current_limit_low": 0.3,
+                "ramp_time": 0.0,
+                "test_time": 1.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "01403-00516": {
+            "name": "01403-00516",
+            "identifier": "",
+            "description": "Zasilacz 01403-00516",
+            "serial_length": [18,19],
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3750,
+                "voltage_tolerance": 50,
+                "current_limit_high": 10.0,
+                "current_limit_low": 0.23,
+                "ramp_time": 0.0,
+                "test_time": 3.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+
+        "01403-00307": {
+            "name": "01403-00307",
+            "identifier": "",
+            "description": "Zasilacz 01403-00307",
+            "serial_length": 17,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3750,
+                "voltage_tolerance": 50,
+                "current_limit_high": 10.0,
+                "current_limit_low": 0.23,
+                "ramp_time": 0.0,
+                "test_time": 3.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "01403-00244": {
+            "name": "01403-00244",
+            "identifier": "",
+            "description": "Zasilacz 01403-00244",
+            "serial_length": 18,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3750,
+                "voltage_tolerance": 50,
+                "current_limit_high": 10.0,
+                "current_limit_low": 0.23,
+                "ramp_time": 0.0,
+                "test_time": 3.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
+        "MPD-PW00476AA": {
+            "name": "MPD-PW00476AA",
+            "identifier": "",
+            "description": "Zasilacz MPD-PW00476AA",
+            "serial_length": 22,
+            "test_params": {
+                "mode": "AC",
+                "voltage": 3750,
+                "voltage_tolerance": 50,
+                "current_limit_high": 10.0,
+                "current_limit_low": 0.23,
+                "ramp_time": 0.0,
+                "test_time": 3.0,
+                "fall_time": 0.0,
+                "frequency": 50,
+                "arc_detection": 0.0
+            }
+        },
     }
+
+    @staticmethod
+    def validate_serial(model_key, serial_number):
+        """
+        Waliduje długość numeru seryjnego dla danego modelu
+
+        Args:
+            model_key: Klucz modelu
+            serial_number: Numer seryjny do walidacji
+
+        Returns:
+            Tuple (bool, str) — (wynik, komunikat)
+        """
+        model = PowerSupplyModels.MODELS.get(model_key)
+        if not model:
+            return False, "Nieznany model"
+
+        expected = model["serial_length"]
+        actual = len(serial_number.strip())
+
+        if isinstance(expected, int):
+            expected = [expected]
+
+        if actual not in expected:
+            if len(expected) == 1:
+                return False, f"Zły S/N! Długość: {actual} znaków, wymagana: {expected[0]}"
+            else:
+                return False, f"Zły S/N! Długość: {actual} znaków, wymagana: {' lub '.join(str(x) for x in expected)}"
+
+        return True, "OK"
 
     @staticmethod
     def identify_model(serial_number):
         """
         Identyfikuje model na podstawie numeru seryjnego
-
-        Args:
-            serial_number: Numer seryjny zasilacza (np. "SSW-3503UK 239C608046")
-
-        Returns:
-            Słownik z danymi modelu lub None jeśli nie rozpoznano
         """
         serial_upper = serial_number.upper().strip()
 
         for model_key, model_data in PowerSupplyModels.MODELS.items():
             identifier = model_data["identifier"].upper()
-            if identifier in serial_upper:
+            if identifier and identifier in serial_upper:
                 return {
                     "model_key": model_key,
                     **model_data
@@ -53,23 +294,10 @@ class PowerSupplyModels:
 
     @staticmethod
     def get_all_models():
-        """
-        Zwraca listę wszystkich dostępnych modeli
-
-        Returns:
-            Lista kluczy modeli
-        """
+        """Zwraca listę wszystkich dostępnych modeli"""
         return list(PowerSupplyModels.MODELS.keys())
 
     @staticmethod
     def get_model_info(model_key):
-        """
-        Pobiera informacje o konkretnym modelu
-
-        Args:
-            model_key: Klucz modelu (np. "PSU-000019-00")
-
-        Returns:
-            Słownik z danymi modelu lub None
-        """
+        """Pobiera informacje o konkretnym modelu"""
         return PowerSupplyModels.MODELS.get(model_key)

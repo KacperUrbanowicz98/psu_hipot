@@ -14,7 +14,7 @@ class Config:
 
     # Ustawienia okna
     WINDOW_WIDTH = 1000
-    WINDOW_HEIGHT = 700
+    WINDOW_HEIGHT = 750
     WINDOW_TITLE = "Reconext Hi-Pot Tester"
 
     # Domyślne parametry testów
@@ -24,11 +24,13 @@ class Config:
 
     # Ustawienia komunikacji RS232
 
-    DEFAULT_COM_PORT = "COM1"
+    DEFAULT_COM_PORT = "COM6"
     DEFAULT_BAUDRATE = 9600
     DEFAULT_PARITY = "NONE"
     DEFAULT_FLOW_CONTROL = "NONE"
 
+    # Tryb symulacji (bez fizycznego urządzenia)
+    SIMULATION_MODE = False  # Zmień na False gdy podłączysz Hi-Pot
 
     # Autoryzowani użytkownicy (HRID)
     AUTHORIZED_USERS = [

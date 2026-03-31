@@ -1,0 +1,18 @@
+Chroma 19052 Test report
+
+Program:	PSU-000006-00
+S/N:		219DC12321
+TIME:		2026/01/21 23:11:20
+Total result:	Pass
+
+STEP:		1
+MODE:		WVAC
+EXT Name:	
+Vtm:		2.997	KV
+Im:		0.925	mA
+Low:		0.300	mA
+High:		2.500	mA
+Result:		Pass
+Error Code:	
+
+Error Description: 

@@ -19,7 +19,7 @@ class AdminPanel:
         """Wyświetla okno panelu administratora"""
         self.window = tk.Toplevel(self.parent)
         self.window.title("Panel Administratora")
-        self.window.geometry("700x600")
+        self.window.geometry("700x700")
         self.window.configure(bg=self.config.COLOR_BG)
 
         # Wycentruj okno
