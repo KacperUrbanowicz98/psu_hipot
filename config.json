@@ -1,0 +1,12 @@
+{
+  "rs232": {
+    "com_port": "COM6",
+    "baudrate": 9600,
+    "parity": "NONE",
+    "flow_control": "NONE"
+  },
+  "general": {
+    "auto_save_results": true,
+    "test_timeout": 300
+  }
+}
