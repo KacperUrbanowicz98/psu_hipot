@@ -175,15 +175,20 @@ class ChromaHiPotDevice:
             print(f"[WYNIK] measured_i    = '{measured_i}'")
             print(f"[WYNIK] real_i        = '{real_i}'")
 
-            # 116 = PASS, 18 = LOW fail, 17 = HIGH fail, 4 = ARC fail
-            result = "PASS" if judgment_code and "116" in judgment_code else "FAIL"
+            # Chroma zwraca kod jako liczbę: 116 = PASS, reszta = FAIL
+            jc = judgment_code.strip() if judgment_code else ""
+            result = "PASS" if jc == "116" else "FAIL"
+
+            # error_code: przy PASS zostawiamy puste, przy FAIL dajemy kod
+            error_code = "" if result == "PASS" else jc
 
             raw_v = float(output_v) if output_v else 0.0
             raw_mi = float(measured_i) if measured_i else 0.0
             raw_ri = float(real_i) if real_i else 0.0
 
             data = {
-                'judgment_code': judgment_code,
+                'judgment_code': jc,
+                'error_code': error_code,  # <-- NOWE
                 'output_voltage': raw_v if raw_v < OVERFLOW else 0.0,
                 'measured_current': (raw_mi * 1000) if raw_mi < OVERFLOW else 0.0,
                 'real_current': (raw_ri * 1000) if raw_ri < OVERFLOW else 0.0,

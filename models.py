@@ -29,10 +29,10 @@ _DEFAULT_MODELS = {
             "frequency": 50, "arc_detection": 0.0,
         }
     },
-    "PSU-000033": {
-        "name": "PSU-000033",
+    "PSU-000033-00": {
+        "name": "PSU-000033-00",
         "identifier": "",
-        "description": "Zasilacz PSU-000033",
+        "description": "Zasilacz PSU-000033-00",
         "serial_length": [21],
         "test_params": {
             "mode": "AC", "voltage": 3000, "voltage_tolerance": 50,
@@ -117,7 +117,7 @@ _DEFAULT_MODELS = {
         "name": "01403-00516",
         "identifier": "",
         "description": "Zasilacz 01403-00516",
-        "serial_length": [18, 19],
+        "serial_length": [17, 18, 19],
         "test_params": {
             "mode": "AC", "voltage": 3750, "voltage_tolerance": 50,
             "current_limit_high": 10.0, "current_limit_low": 0.23,

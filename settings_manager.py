@@ -69,12 +69,31 @@ class SettingsManager:
             print(f"Błąd zapisu {CONFIG_FILE}: {e}")
 
     def load_models(self, default_models: dict) -> dict:
+        """
+        Wczytuje modele z pliku.
+        Jeśli plik nie istnieje — zapisuje domyślne i zwraca je.
+        Jeśli plik istnieje — uzupełnia o nowe modele z default_models
+        których jeszcze nie ma w pliku (nie nadpisuje istniejących).
+        """
         if not os.path.exists(MODELS_FILE):
             self.save_models(default_models)
             return default_models.copy()
         try:
-            with open(MODELS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            with open(MODELS_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+
+            # Dodaj modele z defaults których nie ma jeszcze w JSON
+            updated = False
+            for key, value in default_models.items():
+                if key not in saved:
+                    saved[key] = value
+                    updated = True
+
+            if updated:
+                self.save_models(saved)
+
+            return saved
+
         except Exception as e:
             print(f"Błąd odczytu {MODELS_FILE}: {e}")
             return default_models.copy()
