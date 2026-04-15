@@ -458,7 +458,7 @@ class TestScreen:
         btn_frame.pack(pady=15)
 
         def next_test():
-            new_serial = next_serial_entry.get().strip()
+            new_serial = next_serial_entry.get().strip().upper()
             from models import PowerSupplyModels
             valid, msg = PowerSupplyModels.validate_serial(
                 self.model_info['model_key'], new_serial)

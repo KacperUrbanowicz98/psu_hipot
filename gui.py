@@ -270,7 +270,7 @@ class HiPotTesterApp:
 
     def _process_serial(self):
         model_key = self.selected_model.get()
-        serial = self.serial_entry.get().strip()
+        serial = self.serial_entry.get().strip().upper()
 
         if not model_key:
             self.scan_status_label.config(

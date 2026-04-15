@@ -170,13 +170,15 @@ class PowerSupplyModels:
 
     @staticmethod
     def validate_serial(model_key: str, serial_number: str):
-        """Waliduje długość numeru seryjnego dla danego modelu.
-        Zwraca (True, 'OK') lub (False, komunikat)."""
         model = PowerSupplyModels.MODELS.get(model_key)
         if not model:
             return False, "Nieznany model"
+
+        # Normalizacja — zawsze wielkie litery
+        serial_number = serial_number.strip().upper()
+
         expected = model["serial_length"]
-        actual = len(serial_number.strip())
+        actual = len(serial_number)
         if isinstance(expected, int):
             expected = [expected]
         if actual not in expected:
