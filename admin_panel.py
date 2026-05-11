@@ -1,7 +1,8 @@
 # admin_panel.py
 """Panel administratora aplikacji"""
+import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from models import PowerSupplyModels
 from settings_manager import SettingsManager
 
@@ -34,6 +35,7 @@ class AdminPanel:
         self._create_operators_tab()
         self._create_profiles_tab()
         self._create_general_tab()
+        self._create_logs_tab()          # ← NOWE
         self._create_buttons()
 
     # ------------------------------------------------------------------ #
@@ -191,15 +193,15 @@ class AdminPanel:
                                           show="headings", height=12)
 
         headers = {
-            "model":     ("Model",       160),
-            "tryb":      ("Tryb",         50),
-            "napięcie":  ("Napięcie V",   90),
-            "prąd_low":  ("I low mA",     80),
-            "prąd_high": ("I high mA",    80),
-            "ramp":      ("Ramp s",       70),
-            "test":      ("Test s",       70),
-            "fall":      ("Fall s",       70),
-            "sn":        ("Dł. SN",       70),
+            "model":     ("Model",      160),
+            "tryb":      ("Tryb",        50),
+            "napięcie":  ("Napięcie V",  90),
+            "prąd_low":  ("I low mA",    80),
+            "prąd_high": ("I high mA",   80),
+            "ramp":      ("Ramp s",      70),
+            "test":      ("Test s",      70),
+            "fall":      ("Fall s",      70),
+            "sn":        ("Dł. SN",      70),
         }
         for col, (heading, width) in headers.items():
             self.profiles_tree.heading(col, text=heading)
@@ -310,10 +312,10 @@ class AdminPanel:
         v_freq    = tk.StringVar(value=str(p.get("frequency", 50)))
         v_arc     = tk.StringVar(value=str(p.get("arc_detection", 0.0)))
 
-        row(0, "Nazwa modelu (klucz):", v_name,
+        row(0,  "Nazwa modelu (klucz):", v_name,
             state="disabled" if mode == "edit" else "normal")
-        row(1, "Opis:", v_desc)
-        row(2, "Długość SN (np. 21 lub 10,21):", v_sn)
+        row(1,  "Opis:", v_desc)
+        row(2,  "Długość SN (np. 21 lub 10,21):", v_sn)
 
         # Tryb — combobox
         tk.Label(form, text="Tryb:", bg=self.config.COLOR_WHITE,
@@ -346,7 +348,6 @@ class AdminPanel:
                 err_label.config(text="Model o tej nazwie już istnieje!")
                 return
 
-            # Parsowanie serial_length
             sn_raw = v_sn.get().strip()
             try:
                 if "," in sn_raw:
@@ -357,7 +358,6 @@ class AdminPanel:
                 err_label.config(text="Nieprawidłowa długość SN!")
                 return
 
-            # Parsowanie liczb
             try:
                 new_model = {
                     "name":          name,
@@ -365,16 +365,16 @@ class AdminPanel:
                     "description":   v_desc.get().strip() or f"Zasilacz {name}",
                     "serial_length": sn_val,
                     "test_params": {
-                        "mode":                v_mode.get(),
-                        "voltage":             float(v_voltage.get()),
-                        "voltage_tolerance":   float(v_vtol.get()),
-                        "current_limit_high":  float(v_ihigh.get()),
-                        "current_limit_low":   float(v_ilow.get()),
-                        "ramp_time":           float(v_ramp.get()),
-                        "test_time":           float(v_test.get()),
-                        "fall_time":           float(v_fall.get()),
-                        "frequency":           float(v_freq.get()),
-                        "arc_detection":       float(v_arc.get()),
+                        "mode":               v_mode.get(),
+                        "voltage":            float(v_voltage.get()),
+                        "voltage_tolerance":  float(v_vtol.get()),
+                        "current_limit_high": float(v_ihigh.get()),
+                        "current_limit_low":  float(v_ilow.get()),
+                        "ramp_time":          float(v_ramp.get()),
+                        "test_time":          float(v_test.get()),
+                        "fall_time":          float(v_fall.get()),
+                        "frequency":          float(v_freq.get()),
+                        "arc_detection":      float(v_arc.get()),
                     }
                 }
             except ValueError:
@@ -498,6 +498,145 @@ class AdminPanel:
             self.connection_status_label.config(
                 text=f"✗ Błąd: {e}", fg=self.config.COLOR_ERROR)
             messagebox.showerror("Błąd", str(e))
+
+    # ------------------------------------------------------------------ #
+    #  ZAKŁADKA — ŚCIEŻKA LOGÓW                                           #
+    # ------------------------------------------------------------------ #
+    def _create_logs_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.config.COLOR_WHITE)
+        self.notebook.add(frame, text="Ścieżka logów")
+
+        # --- Nagłówek zakładki ---
+        tk.Label(frame,
+                 text="Lokalizacja zapisu plików logów",
+                 bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
+                 font=("Arial", 13, "bold")).pack(pady=(22, 4))
+
+        tk.Label(frame,
+                 text="Logi są pobierane przez system IFS i wysyłane dalej przez web service.\n"
+                      "Wskaż folder na dysku sieciowym dostępny dla systemu IFS.",
+                 bg=self.config.COLOR_WHITE, fg="#666666",
+                 font=("Arial", 9, "italic"), justify="center").pack(pady=(0, 18))
+
+        # --- Separator ---
+        tk.Frame(frame, bg="#e0e0e0", height=1).pack(fill=tk.X, padx=30, pady=(0, 18))
+
+        # --- Pole ścieżki + przycisk Przeglądaj ---
+        path_outer = tk.Frame(frame, bg=self.config.COLOR_WHITE)
+        path_outer.pack(fill=tk.X, padx=30)
+
+        tk.Label(path_outer, text="Ścieżka zapisu logów:",
+                 bg=self.config.COLOR_WHITE, fg="#333333",
+                 font=("Arial", 10, "bold"), anchor="w").pack(anchor="w", pady=(0, 5))
+
+        entry_row = tk.Frame(path_outer, bg=self.config.COLOR_WHITE)
+        entry_row.pack(fill=tk.X)
+
+        self.log_dir_var = tk.StringVar(value=getattr(self.config, "LOG_DIR", "logs"))
+
+        self.log_dir_entry = tk.Entry(
+            entry_row, textvariable=self.log_dir_var,
+            font=("Courier", 11), relief=tk.SOLID, borderwidth=1)
+        self.log_dir_entry.pack(side=tk.LEFT, expand=True, fill=tk.X, ipady=6, padx=(0, 8))
+
+        tk.Button(entry_row, text="Przeglądaj…",
+                  bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
+                  font=("Arial", 10, "bold"), relief=tk.FLAT, cursor="hand2",
+                  padx=12, pady=6,
+                  command=self._browse_log_dir).pack(side=tk.LEFT)
+
+        # --- Przyciski akcji ---
+        actions_row = tk.Frame(frame, bg=self.config.COLOR_WHITE)
+        actions_row.pack(pady=(14, 4))
+
+        tk.Button(actions_row, text="Sprawdź dostępność",
+                  bg="#FF9800", fg=self.config.COLOR_WHITE,
+                  font=("Arial", 10, "bold"), relief=tk.FLAT, cursor="hand2",
+                  padx=14, pady=6,
+                  command=self._check_log_dir).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(actions_row, text="💾  Zapisz ścieżkę",
+                  bg=self.config.COLOR_ACCENT, fg=self.config.COLOR_WHITE,
+                  font=("Arial", 10, "bold"), relief=tk.FLAT, cursor="hand2",
+                  padx=14, pady=6,
+                  command=self._save_log_dir).pack(side=tk.LEFT)
+
+        # --- Label statusu ---
+        self.log_dir_status = tk.Label(
+            frame, text="",
+            bg=self.config.COLOR_WHITE,
+            font=("Arial", 10))
+        self.log_dir_status.pack(pady=(8, 0))
+
+        # --- Separator + aktualna ścieżka w stopce ---
+        tk.Frame(frame, bg="#e0e0e0", height=1).pack(fill=tk.X, padx=30, pady=(20, 8))
+
+        self.log_dir_current_label = tk.Label(
+            frame,
+            text=f"Aktualnie aktywna ścieżka:  {getattr(self.config, 'LOG_DIR', 'logs')}",
+            bg=self.config.COLOR_WHITE, fg="#999999",
+            font=("Arial", 9, "italic"))
+        self.log_dir_current_label.pack(pady=(0, 10))
+
+    def _browse_log_dir(self):
+        current = self.log_dir_var.get().strip() or "C:\\"
+        chosen = filedialog.askdirectory(
+            title="Wybierz folder zapisu logów",
+            initialdir=current,
+            parent=self.window)
+        if chosen:
+            # Normalizuj do backslash — ścieżki sieciowe \\serwer\udział
+            self.log_dir_var.set(chosen.replace("/", "\\"))
+            self.log_dir_status.config(text="", fg="#333333")
+
+    def _check_log_dir(self):
+        path = self.log_dir_var.get().strip()
+        if not path:
+            self.log_dir_status.config(
+                text="✗ Ścieżka jest pusta!", fg=self.config.COLOR_ERROR)
+            return
+        if not os.path.isdir(path):
+            self.log_dir_status.config(
+                text=f"✗ Folder nie istnieje lub jest niedostępny: {path}",
+                fg=self.config.COLOR_ERROR)
+            return
+        # Sprawdź uprawnienia zapisu
+        test_file = os.path.join(path, "_hipot_write_test.tmp")
+        try:
+            with open(test_file, "w") as f:
+                f.write("ok")
+            os.remove(test_file)
+            self.log_dir_status.config(
+                text=f"✓ Ścieżka dostępna i zapisywalna",
+                fg=self.config.COLOR_ACCENT)
+        except Exception as e:
+            self.log_dir_status.config(
+                text=f"✗ Brak uprawnień do zapisu: {e}",
+                fg=self.config.COLOR_ERROR)
+
+    def _save_log_dir(self):
+        path = self.log_dir_var.get().strip()
+        if not path:
+            messagebox.showwarning("Błąd", "Ścieżka nie może być pusta!", parent=self.window)
+            return
+        # Utwórz folder jeśli nie istnieje (np. lokalny fallback)
+        if not os.path.isdir(path):
+            try:
+                os.makedirs(path, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("Błąd",
+                                     f"Nie można utworzyć folderu:\n{e}",
+                                     parent=self.window)
+                return
+        self.config.LOG_DIR = path
+        self.settings.save_config(self.config)
+        self.log_dir_current_label.config(
+            text=f"Aktualnie aktywna ścieżka:  {path}")
+        self.log_dir_status.config(
+            text="✓ Ścieżka zapisana pomyślnie", fg=self.config.COLOR_ACCENT)
+        messagebox.showinfo("Sukces",
+                            f"Ścieżka logów zapisana:\n{path}",
+                            parent=self.window)
 
     # ------------------------------------------------------------------ #
     #  PRZYCISKI DOLNE                                                     #

@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 
-LOG_DIR = "logs"
+_DEFAULT_LOG_DIR = "logs"
 
 ERROR_CODES = {
     "1":   "Hardware Fail",
@@ -32,15 +32,20 @@ def _get_error_description(error_code: str) -> str:
 def save_report(operator: str, program: str, serial: str,
                 mode: str, vtm: float, im: float,
                 low: float, high: float,
-                result: str, error_code: str = "") -> str:
+                result: str, error_code: str = "",
+                log_dir: str = _DEFAULT_LOG_DIR) -> str:
     """
     Zapisuje raport TXT w formacie Chroma 19052.
     Nazwa pliku: SN_YYYYMMDDHHmmss.txt  np. 21BDA26773_20260408143647.txt
     Zwraca ścieżkę do pliku.
-    """
-    os.makedirs(LOG_DIR, exist_ok=True)
 
-    now = datetime.now()
+    Parametry:
+        log_dir - ścieżka folderu zapisu (domyślnie lokalny 'logs').
+                  Przekaż config.LOG_DIR aby używać ścieżki sieciowej IFS.
+    """
+    os.makedirs(log_dir, exist_ok=True)
+
+    now          = datetime.now()
     datetime_str = now.strftime("%Y/%m/%d %H:%M:%S")
     error_desc   = _get_error_description(error_code)
     result_cap   = "Pass" if str(result).upper() == "PASS" else "Fail"
@@ -69,7 +74,7 @@ def save_report(operator: str, program: str, serial: str,
 
     # Nazwa pliku: SN_YYYYMMDDHHmmss.txt
     filename = f"{serial}_{now.strftime('%Y%m%d%H%M%S')}.txt"
-    filepath = os.path.join(LOG_DIR, filename)
+    filepath = os.path.join(log_dir, filename)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("\r\n".join(lines))

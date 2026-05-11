@@ -123,17 +123,20 @@
     "name": "PSU-00006-00",
     "identifier": "",
     "description": "Zasilacz PSU-00006-00",
-    "serial_length": 10,
+    "serial_length": [
+      10,
+      9
+    ],
     "test_params": {
       "mode": "AC",
-      "voltage": 3000,
-      "voltage_tolerance": 50,
+      "voltage": 3000.0,
+      "voltage_tolerance": 50.0,
       "current_limit_high": 2.5,
       "current_limit_low": 0.3,
       "ramp_time": 0.0,
       "test_time": 1.0,
       "fall_time": 0.0,
-      "frequency": 50,
+      "frequency": 50.0,
       "arc_detection": 0.0
     }
   },

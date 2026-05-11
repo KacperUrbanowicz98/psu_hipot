@@ -1,0 +1,18 @@
+Chroma 19052 Test report
+
+Program:	01403-00516
+S/N:		LTD00306174435210
+TIME:		2026/05/11 12:34:06
+Total result:	Pass
+
+STEP:		1
+MODE:		AC
+EXT Name:	
+Vtm:		3.752	KV
+Im:		2.050	mA
+Low:		0.230	mA
+High:		10.000	mA
+Result:		Pass
+Error Code:	
+
+Error Description: 

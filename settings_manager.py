@@ -39,13 +39,15 @@ class SettingsManager:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             rs = data.get("rs232", {})
-            config_obj.DEFAULT_COM_PORT     = rs.get("com_port",     config_obj.DEFAULT_COM_PORT)
-            config_obj.DEFAULT_BAUDRATE     = rs.get("baudrate",     config_obj.DEFAULT_BAUDRATE)
-            config_obj.DEFAULT_PARITY       = rs.get("parity",       config_obj.DEFAULT_PARITY)
-            config_obj.DEFAULT_FLOW_CONTROL = rs.get("flow_control",  config_obj.DEFAULT_FLOW_CONTROL)
+            config_obj.DEFAULT_COM_PORT     = rs.get("com_port",      config_obj.DEFAULT_COM_PORT)
+            config_obj.DEFAULT_BAUDRATE     = rs.get("baudrate",      config_obj.DEFAULT_BAUDRATE)
+            config_obj.DEFAULT_PARITY       = rs.get("parity",        config_obj.DEFAULT_PARITY)
+            config_obj.DEFAULT_FLOW_CONTROL = rs.get("flow_control",   config_obj.DEFAULT_FLOW_CONTROL)
             gen = data.get("general", {})
             config_obj.AUTO_SAVE_RESULTS = gen.get("auto_save_results", True)
             config_obj.TEST_TIMEOUT      = gen.get("test_timeout",      300)
+            # ── NOWE: ścieżka logów ──
+            config_obj.LOG_DIR           = gen.get("log_dir",           config_obj.LOG_DIR)
         except Exception as e:
             print(f"Błąd odczytu {CONFIG_FILE}: {e}")
 
@@ -60,7 +62,9 @@ class SettingsManager:
                 },
                 "general": {
                     "auto_save_results": getattr(config_obj, "AUTO_SAVE_RESULTS", True),
-                    "test_timeout":      getattr(config_obj, "TEST_TIMEOUT", 300),
+                    "test_timeout":      getattr(config_obj, "TEST_TIMEOUT",      300),
+                    # ── NOWE: ścieżka logów ──
+                    "log_dir":           getattr(config_obj, "LOG_DIR",           "logs"),
                 }
             }
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:

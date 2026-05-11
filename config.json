@@ -7,6 +7,7 @@
   },
   "general": {
     "auto_save_results": true,
-    "test_timeout": 300
+    "test_timeout": 300,
+    "log_dir": "logs"
   }
 }

@@ -2,29 +2,31 @@
 """Konfiguracja aplikacji"""
 from settings_manager import SettingsManager
 
-
 class Config:
     # Kolory
-    COLOR_PRIMARY   = "#375ea9"
-    COLOR_ACCENT    = "#4CAF50"
-    COLOR_BG        = "#f5f5f5"
-    COLOR_WHITE     = "#FFFFFF"
-    COLOR_ERROR     = "#f44336"
+    COLOR_PRIMARY = "#375ea9"
+    COLOR_ACCENT = "#4CAF50"
+    COLOR_BG = "#f5f5f5"
+    COLOR_WHITE = "#FFFFFF"
+    COLOR_ERROR = "#f44336"
 
     # Okno
-    WINDOW_WIDTH    = 1000
-    WINDOW_HEIGHT   = 750
-    WINDOW_TITLE    = "Reconext Hi-Pot Tester"
+    WINDOW_WIDTH = 1000
+    WINDOW_HEIGHT = 750
+    WINDOW_TITLE = "Reconext Hi-Pot Tester"
 
     # RS232
-    DEFAULT_COM_PORT    = "COM6"
-    DEFAULT_BAUDRATE    = 9600
-    DEFAULT_PARITY      = "NONE"
+    DEFAULT_COM_PORT = "COM6"
+    DEFAULT_BAUDRATE = 9600
+    DEFAULT_PARITY = "NONE"
     DEFAULT_FLOW_CONTROL = "NONE"
 
     # Inne
     AUTO_SAVE_RESULTS = True
-    TEST_TIMEOUT      = 300
+    TEST_TIMEOUT = 300
+
+    # ── NOWE: Ścieżka zapisu logów (domyślnie lokalny folder "logs") ──
+    LOG_DIR = "logs"
 
     # Autoryzowani operatorzy (fallback — nadpisywane z operators.json)
     AUTHORIZED_USERS = [
@@ -38,4 +40,4 @@ class Config:
     def __init__(self):
         sm = SettingsManager()
         self.AUTHORIZED_USERS = sm.load_operators(self.AUTHORIZED_USERS)
-        sm.load_config(self)
+        sm.load_config(self)  # ← wczytuje też LOG_DIR z config.json

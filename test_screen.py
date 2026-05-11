@@ -375,6 +375,7 @@ class TestScreen:
                 high       = p["current_limit_high"],
                 result     = result,
                 error_code = error_code,
+                log_dir=self.config.LOG_DIR,  # ← JEDYNA ZMIANA
             )
             print(f"[LOG] Zapisano: {log_path}")
         except Exception as e:
