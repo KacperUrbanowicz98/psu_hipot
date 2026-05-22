@@ -1,88 +1,81 @@
 # interlock.py
-"""Obsługa hardware interlock przez Arduino (Serial, pin 6 → GND)"""
-import serial
+"""Monitor stanu klapy bezpieczeństwa — Arduino Leonardo via Serial"""
 import threading
 import time
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 
 class InterlockMonitor:
-    """
-    Odpytuje Arduino przez Serial w osobnym wątku.
-    Arduino wysyła 'CLOSED' lub 'OPEN' co 100ms.
-    CLOSED = pin 6 zwarty do GND = klapa zamknięta = można testować.
-    """
 
     def __init__(self, port: str, baudrate: int = 9600):
         self.port     = port
         self.baudrate = baudrate
-        self._serial:    Optional[serial.Serial]          = None
-        self._state:     Optional[bool]                   = None
-        self._running    = False
-        self._thread:    Optional[threading.Thread]       = None
-        self._on_change: Optional[Callable[[bool], None]] = None
+        self._serial  = None
+        self._thread  = None
+        self._running = False
+        self._on_change_cb: Optional[Callable[[bool], None]] = None
+        self._last_state: Optional[bool] = None   # True = CLOSED, False = OPEN
 
-    # ── Połączenie ──────────────────────────────────────────────────────
+    # ------------------------------------------------------------------ #
+
     def connect(self) -> bool:
         try:
+            import serial
             self._serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=1)
-            time.sleep(1.5)   # Arduino resetuje się po otwarciu portu COM
+                self.port, self.baudrate, timeout=1)
+            time.sleep(1.5)   # Arduino resetuje się przy otwarciu portu
             self._serial.reset_input_buffer()
-            print(f"[INTERLOCK] Połączono z Arduino: {self.port}")
             return True
         except Exception as e:
             print(f"[INTERLOCK] Błąd połączenia: {e}")
+            self._serial = None
             return False
 
     def disconnect(self):
         self._running = False
         if self._serial and self._serial.is_open:
-            self._serial.close()
-        print("[INTERLOCK] Rozłączono")
+            try:
+                self._serial.close()
+            except Exception:
+                pass
+        self._serial = None
 
-    # ── Callback ────────────────────────────────────────────────────────
     def set_on_change(self, callback: Callable[[bool], None]):
-        """
-        callback(closed: bool):
-            True  → klapa zamknięta → test możliwy
-            False → klapa otwarta   → test zablokowany
-        """
-        self._on_change = callback
+        """Callback wywoływany przy każdej zmianie stanu klapy."""
+        self._on_change_cb = callback
 
-    # ── Stan bieżący ────────────────────────────────────────────────────
-    @property
-    def is_closed(self) -> Optional[bool]:
-        """True=zamknięta, False=otwarta, None=brak danych"""
-        return self._state
-
-    # ── Wątek monitorowania ─────────────────────────────────────────────
     def start_monitoring(self):
-        if not self._serial or not self._serial.is_open:
-            print("[INTERLOCK] Brak połączenia!")
-            return
         self._running = True
         self._thread = threading.Thread(
             target=self._monitor_loop, daemon=True)
         self._thread.start()
-        print("[INTERLOCK] Monitoring uruchomiony")
+
+    # ------------------------------------------------------------------ #
 
     def _monitor_loop(self):
         while self._running:
             try:
-                if self._serial.in_waiting > 0:
-                    line = self._serial.readline()\
-                           .decode("ascii", errors="ignore").strip()
-                    if line in ("CLOSED", "OPEN"):
-                        new_state = (line == "CLOSED")
-                        if new_state != self._state:
-                            self._state = new_state
-                            if self._on_change:
-                                self._on_change(new_state)
+                if not self._serial or not self._serial.is_open:
+                    break
+
+                raw = self._serial.readline()
+                line = raw.decode("ascii", errors="ignore").strip()
+
+                if line not in ("OPEN", "CLOSED"):
+                    continue
+
+                closed = (line == "CLOSED")
+
+                # Wywołuj callback tylko przy zmianie stanu
+                if closed != self._last_state:
+                    self._last_state = closed
+                    if self._on_change_cb:
+                        self._on_change_cb(closed)
+
             except Exception as e:
                 print(f"[INTERLOCK] Błąd odczytu: {e}")
-                self._running = False
-                break
-            time.sleep(0.05)
+                time.sleep(0.5)
+
+    @property
+    def connected(self) -> bool:
+        return self._serial is not None and self._serial.is_open
