@@ -35,7 +35,8 @@ class AdminPanel:
         self._create_operators_tab()
         self._create_profiles_tab()
         self._create_general_tab()
-        self._create_logs_tab()          # ← NOWE
+        self._create_logs_tab()
+        self._create_interlock_tab()     # ← NOWE
         self._create_buttons()
 
     # ------------------------------------------------------------------ #
@@ -317,7 +318,6 @@ class AdminPanel:
         row(1,  "Opis:", v_desc)
         row(2,  "Długość SN (np. 21 lub 10,21):", v_sn)
 
-        # Tryb — combobox
         tk.Label(form, text="Tryb:", bg=self.config.COLOR_WHITE,
                  fg="#333333", font=("Arial", 10),
                  anchor="w", width=24).grid(row=3, column=0, sticky="w", pady=4)
@@ -506,7 +506,6 @@ class AdminPanel:
         frame = tk.Frame(self.notebook, bg=self.config.COLOR_WHITE)
         self.notebook.add(frame, text="Ścieżka logów")
 
-        # --- Nagłówek zakładki ---
         tk.Label(frame,
                  text="Lokalizacja zapisu plików logów",
                  bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
@@ -518,10 +517,8 @@ class AdminPanel:
                  bg=self.config.COLOR_WHITE, fg="#666666",
                  font=("Arial", 9, "italic"), justify="center").pack(pady=(0, 18))
 
-        # --- Separator ---
         tk.Frame(frame, bg="#e0e0e0", height=1).pack(fill=tk.X, padx=30, pady=(0, 18))
 
-        # --- Pole ścieżki + przycisk Przeglądaj ---
         path_outer = tk.Frame(frame, bg=self.config.COLOR_WHITE)
         path_outer.pack(fill=tk.X, padx=30)
 
@@ -545,7 +542,6 @@ class AdminPanel:
                   padx=12, pady=6,
                   command=self._browse_log_dir).pack(side=tk.LEFT)
 
-        # --- Przyciski akcji ---
         actions_row = tk.Frame(frame, bg=self.config.COLOR_WHITE)
         actions_row.pack(pady=(14, 4))
 
@@ -561,14 +557,10 @@ class AdminPanel:
                   padx=14, pady=6,
                   command=self._save_log_dir).pack(side=tk.LEFT)
 
-        # --- Label statusu ---
         self.log_dir_status = tk.Label(
-            frame, text="",
-            bg=self.config.COLOR_WHITE,
-            font=("Arial", 10))
+            frame, text="", bg=self.config.COLOR_WHITE, font=("Arial", 10))
         self.log_dir_status.pack(pady=(8, 0))
 
-        # --- Separator + aktualna ścieżka w stopce ---
         tk.Frame(frame, bg="#e0e0e0", height=1).pack(fill=tk.X, padx=30, pady=(20, 8))
 
         self.log_dir_current_label = tk.Label(
@@ -585,7 +577,6 @@ class AdminPanel:
             initialdir=current,
             parent=self.window)
         if chosen:
-            # Normalizuj do backslash — ścieżki sieciowe \\serwer\udział
             self.log_dir_var.set(chosen.replace("/", "\\"))
             self.log_dir_status.config(text="", fg="#333333")
 
@@ -600,14 +591,13 @@ class AdminPanel:
                 text=f"✗ Folder nie istnieje lub jest niedostępny: {path}",
                 fg=self.config.COLOR_ERROR)
             return
-        # Sprawdź uprawnienia zapisu
         test_file = os.path.join(path, "_hipot_write_test.tmp")
         try:
             with open(test_file, "w") as f:
                 f.write("ok")
             os.remove(test_file)
             self.log_dir_status.config(
-                text=f"✓ Ścieżka dostępna i zapisywalna",
+                text="✓ Ścieżka dostępna i zapisywalna",
                 fg=self.config.COLOR_ACCENT)
         except Exception as e:
             self.log_dir_status.config(
@@ -619,13 +609,11 @@ class AdminPanel:
         if not path:
             messagebox.showwarning("Błąd", "Ścieżka nie może być pusta!", parent=self.window)
             return
-        # Utwórz folder jeśli nie istnieje (np. lokalny fallback)
         if not os.path.isdir(path):
             try:
                 os.makedirs(path, exist_ok=True)
             except Exception as e:
-                messagebox.showerror("Błąd",
-                                     f"Nie można utworzyć folderu:\n{e}",
+                messagebox.showerror("Błąd", f"Nie można utworzyć folderu:\n{e}",
                                      parent=self.window)
                 return
         self.config.LOG_DIR = path
@@ -634,8 +622,170 @@ class AdminPanel:
             text=f"Aktualnie aktywna ścieżka:  {path}")
         self.log_dir_status.config(
             text="✓ Ścieżka zapisana pomyślnie", fg=self.config.COLOR_ACCENT)
-        messagebox.showinfo("Sukces",
-                            f"Ścieżka logów zapisana:\n{path}",
+        messagebox.showinfo("Sukces", f"Ścieżka logów zapisana:\n{path}",
+                            parent=self.window)
+
+    # ------------------------------------------------------------------ #
+    #  ZAKŁADKA — INTERLOCK (ARDUINO)                                      #
+    # ------------------------------------------------------------------ #
+    def _create_interlock_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.config.COLOR_WHITE)
+        self.notebook.add(frame, text="Interlock (Arduino)")
+
+        # --- Nagłówek ---
+        tk.Label(frame,
+                 text="Konfiguracja Hardware Interlock",
+                 bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
+                 font=("Arial", 13, "bold")).pack(pady=(22, 4))
+
+        tk.Label(frame,
+                 text="Arduino Leonardo monitoruje stan klapy bezpieczeństwa (pin 6 → GND).\n"
+                      "Zamknięcie klapy uruchamia test automatycznie.",
+                 bg=self.config.COLOR_WHITE, fg="#666666",
+                 font=("Arial", 9, "italic"), justify="center").pack(pady=(0, 18))
+
+        tk.Frame(frame, bg="#e0e0e0", height=1).pack(fill=tk.X, padx=30, pady=(0, 20))
+
+        # --- Formularz ustawień ---
+        content = tk.Frame(frame, bg=self.config.COLOR_WHITE)
+        content.pack(fill=tk.X, padx=40)
+
+        def field(r, label, var, values=None, entry_type="combo"):
+            tk.Label(content, text=label, bg=self.config.COLOR_WHITE,
+                     fg="#333333", font=("Arial", 11),
+                     anchor="w", width=26).grid(row=r, column=0, sticky="w", pady=10)
+            if entry_type == "combo":
+                w = ttk.Combobox(content, textvariable=var,
+                                 values=values, state="readonly",
+                                 width=15, font=("Arial", 10))
+            else:
+                w = tk.Entry(content, textvariable=var, width=17,
+                             font=("Arial", 10), relief=tk.SOLID, borderwidth=1)
+            w.grid(row=r, column=1, sticky="w", pady=10)
+            return w
+
+        self.interlock_port_var = tk.StringVar(
+            value=getattr(self.config, "INTERLOCK_PORT", "COM7"))
+        self.interlock_baud_var = tk.StringVar(
+            value=str(getattr(self.config, "INTERLOCK_BAUDRATE", 9600)))
+        self.interlock_enabled_var = tk.BooleanVar(
+            value=getattr(self.config, "INTERLOCK_ENABLED", True))
+
+        field(0, "Port COM (Arduino):", self.interlock_port_var,
+              ["COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8",
+               "COM9","COM10","COM11","COM12"])
+        field(1, "Baud Rate:", self.interlock_baud_var,
+              ["4800","9600","19200","38400","115200"])
+
+        # Checkbox włącz/wyłącz interlock
+        tk.Label(content, text="Interlock aktywny:",
+                 bg=self.config.COLOR_WHITE, fg="#333333",
+                 font=("Arial", 11), anchor="w", width=26).grid(
+            row=2, column=0, sticky="w", pady=10)
+        tk.Checkbutton(content, variable=self.interlock_enabled_var,
+                       bg=self.config.COLOR_WHITE,
+                       activebackground=self.config.COLOR_WHITE,
+                       font=("Arial", 10)).grid(row=2, column=1, sticky="w", pady=10)
+
+        tk.Label(content,
+                 text="(odznacz aby używać przycisku START ręcznie bez Arduino)",
+                 bg=self.config.COLOR_WHITE, fg="#999999",
+                 font=("Arial", 8, "italic")).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=(0, 0), pady=(0, 10))
+
+        tk.Frame(content, bg="#e0e0e0", height=1).grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=15)
+
+        # --- Przyciski akcji ---
+        btn_row = tk.Frame(frame, bg=self.config.COLOR_WHITE)
+        btn_row.pack(pady=(0, 10))
+
+        tk.Button(btn_row, text="🔌  Testuj połączenie z Arduino",
+                  bg="#FF9800", fg=self.config.COLOR_WHITE,
+                  font=("Arial", 10, "bold"), relief=tk.FLAT, cursor="hand2",
+                  padx=14, pady=6,
+                  command=self._test_interlock).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(btn_row, text="💾  Zapisz ustawienia",
+                  bg=self.config.COLOR_ACCENT, fg=self.config.COLOR_WHITE,
+                  font=("Arial", 10, "bold"), relief=tk.FLAT, cursor="hand2",
+                  padx=14, pady=6,
+                  command=self._save_interlock).pack(side=tk.LEFT)
+
+        # --- Status ---
+        self.interlock_status_label = tk.Label(
+            frame, text="", bg=self.config.COLOR_WHITE, font=("Arial", 10))
+        self.interlock_status_label.pack(pady=(6, 0))
+
+        tk.Frame(frame, bg="#e0e0e0", height=1).pack(
+            fill=tk.X, padx=30, pady=(20, 8))
+
+        # --- Info o aktualnej konfiguracji ---
+        self.interlock_current_label = tk.Label(
+            frame,
+            text=self._interlock_current_text(),
+            bg=self.config.COLOR_WHITE, fg="#999999",
+            font=("Arial", 9, "italic"))
+        self.interlock_current_label.pack(pady=(0, 10))
+
+    def _interlock_current_text(self) -> str:
+        port    = getattr(self.config, "INTERLOCK_PORT",    "COM7")
+        baud    = getattr(self.config, "INTERLOCK_BAUDRATE", 9600)
+        enabled = getattr(self.config, "INTERLOCK_ENABLED",  True)
+        status  = "aktywny" if enabled else "wyłączony"
+        return f"Aktualna konfiguracja:  {port}  @{baud} baud  —  {status}"
+
+    def _test_interlock(self):
+        port = self.interlock_port_var.get()
+        baud = int(self.interlock_baud_var.get())
+        self.interlock_status_label.config(
+            text=f"⏳ Łączenie z Arduino na {port}...", fg="#FF9800")
+        self.window.update()
+        try:
+            import serial
+            import time
+            with serial.Serial(port, baud, timeout=2) as s:
+                time.sleep(1.5)
+                s.reset_input_buffer()
+                # Czekaj na pierwszą linię przez 2 sekundy
+                deadline = time.time() + 2.0
+                line = ""
+                while time.time() < deadline:
+                    if s.in_waiting > 0:
+                        line = s.readline().decode("ascii", errors="ignore").strip()
+                        break
+                    time.sleep(0.05)
+
+            if line in ("OPEN", "CLOSED"):
+                stan = "🔒 ZAMKNIĘTA" if line == "CLOSED" else "🔓 OTWARTA"
+                self.interlock_status_label.config(
+                    text=f"✓ Arduino odpowiada — klapa: {stan}",
+                    fg=self.config.COLOR_ACCENT)
+            elif line:
+                self.interlock_status_label.config(
+                    text=f"⚠ Arduino odpowiada, nieznany format: '{line}'",
+                    fg="#FF9800")
+            else:
+                self.interlock_status_label.config(
+                    text="⚠ Arduino podłączone, ale brak danych — sprawdź baudrate lub szkic",
+                    fg="#FF9800")
+        except Exception as e:
+            self.interlock_status_label.config(
+                text=f"✗ Błąd: {e}", fg=self.config.COLOR_ERROR)
+
+    def _save_interlock(self):
+        self.config.INTERLOCK_PORT    = self.interlock_port_var.get()
+        self.config.INTERLOCK_BAUDRATE = int(self.interlock_baud_var.get())
+        self.config.INTERLOCK_ENABLED  = self.interlock_enabled_var.get()
+        self.settings.save_config(self.config)
+        self.interlock_current_label.config(text=self._interlock_current_text())
+        self.interlock_status_label.config(
+            text="✓ Ustawienia interlocka zapisane", fg=self.config.COLOR_ACCENT)
+        messagebox.showinfo("Zapisano",
+                            f"Interlock zapisany:\n"
+                            f"Port: {self.config.INTERLOCK_PORT}\n"
+                            f"Baud: {self.config.INTERLOCK_BAUDRATE}\n"
+                            f"Aktywny: {self.config.INTERLOCK_ENABLED}",
                             parent=self.window)
 
     # ------------------------------------------------------------------ #

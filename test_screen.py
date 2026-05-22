@@ -29,9 +29,12 @@ class TestScreen:
         self.elapsed_time = 0.0
         self.test_result = None
 
-        # Ostatni niezerowy pomiar — do zapisu w logu
         self.last_valid_voltage = 0.0
         self.last_valid_current = 0.0
+
+        # ── Interlock ───────────────────────────────────────────────────
+        self.interlock = None
+        self._prev_interlock_closed = None
 
     def show(self):
         for widget in self.parent.winfo_children():
@@ -46,10 +49,12 @@ class TestScreen:
         self.create_test_params()
         self.create_live_display()
         self.create_progress_bar()
+        self.create_interlock_status()   # ← NOWE (przed przyciskami)
         self.create_control_buttons()
         self.create_footer()
 
         self.connect_device()
+        self.connect_interlock()         # ← NOWE
 
     # ------------------------------------------------------------------ #
     #  HEADER / FOOTER                                                     #
@@ -94,6 +99,8 @@ class TestScreen:
                 "Test w toku",
                 "Nie można wrócić do menu podczas testu!\nZatrzymaj test przyciskiem STOP.")
             return
+        if self.interlock:               # ← NOWE
+            self.interlock.disconnect()
         if self.device:
             self.device.disconnect()
         if self.app_ref:
@@ -214,6 +221,93 @@ class TestScreen:
         self.progress_rect = self.progress_canvas.create_rectangle(
             0, 0, 0, 30, fill=self.config.COLOR_ACCENT, outline="")
 
+    # ------------------------------------------------------------------ #
+    #  INTERLOCK — PASEK STATUSU                                           #
+    # ------------------------------------------------------------------ #
+    def create_interlock_status(self):
+        self.interlock_frame = tk.Frame(
+            self.main_frame, bg="#fff8e1",
+            relief=tk.RAISED, borderwidth=2)
+        self.interlock_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.interlock_label = tk.Label(
+            self.interlock_frame,
+            text="⏳ Łączenie z interlockiem (Arduino)...",
+            bg="#fff8e1", fg="#FF9800",
+            font=("Arial", 11, "bold"))
+        self.interlock_label.pack(pady=8)
+
+    def connect_interlock(self):
+        port = getattr(self.config, "INTERLOCK_PORT", None)
+        if not port:
+            self.interlock_label.config(
+                text="⚠ Brak portu Arduino w konfiguracji — tryb ręczny",
+                fg="#FF9800", bg="#fff8e1")
+            self.interlock_frame.config(bg="#fff8e1")
+            return
+
+        from interlock import InterlockMonitor
+        self.interlock = InterlockMonitor(port=port)
+
+        if self.interlock.connect():
+            self.interlock.set_on_change(self._on_interlock_change)
+            self.interlock.start_monitoring()
+            self.interlock_label.config(
+                text="⏳ Oczekiwanie na stan klapy...",
+                fg="#FF9800", bg="#fff8e1")
+            # Zablokuj START dopóki nie znamy stanu klapy
+            self.start_button.config(state="disabled")
+        else:
+            self.interlock_label.config(
+                text=f"✗ Błąd połączenia z Arduino ({port}) — tryb ręczny",
+                fg=self.config.COLOR_ERROR, bg="#ffebee")
+            self.interlock_frame.config(bg="#ffebee")
+
+    def _on_interlock_change(self, closed: bool):
+        """Wywołane z wątku Arduino — przekaż bezpiecznie do Tkinter"""
+        self.parent.after(0, lambda: self._apply_interlock_state(closed))
+
+    def _apply_interlock_state(self, closed: bool):
+        if closed:
+            self.interlock_label.config(
+                text="🔒 Klapa ZAMKNIĘTA — uruchamiam test...",
+                fg=self.config.COLOR_ACCENT, bg="#e8f5e9")
+            self.interlock_frame.config(bg="#e8f5e9")
+            if not self.test_running and self.device and self.device.connected:
+                self.start_test()
+            elif not self.test_running:
+                self.start_button.config(state="normal")
+        else:
+            self.interlock_label.config(
+                text="🔓 Klapa OTWARTA — wyjmij urządzenie i zamknij klapę",
+                fg=self.config.COLOR_ERROR, bg="#ffebee")
+            self.interlock_frame.config(bg="#ffebee")
+
+            if self.test_running:
+                # ── PRZERWANIE TESTU przy otwarciu klapy ──────────────────
+                self.test_running = False
+                if self.device:
+                    self.device.stop_test()
+                self.start_button.config(state='disabled')
+                self.stop_button.config(state='disabled')
+                self.back_button.config(state='normal')
+                self.status_label.config(
+                    text="⛔ Test przerwany — klapa została otwarta!",
+                    fg=self.config.COLOR_ERROR)
+                messagebox.showwarning(
+                    "Test przerwany",
+                    "Klapa została otwarta podczas testu!\n"
+                    "Test został automatycznie zatrzymany.\n\n"
+                    "Zamknij klapę aby uruchomić nowy test.",
+                    parent=self.parent)
+            else:
+                self.start_button.config(state="disabled")
+
+        self._prev_interlock_closed = closed
+
+    # ------------------------------------------------------------------ #
+    #  PRZYCISKI STEROWANIA                                                #
+    # ------------------------------------------------------------------ #
     def create_control_buttons(self):
         button_frame = tk.Frame(self.main_frame, bg=self.config.COLOR_BG)
         button_frame.pack(fill=tk.X)
@@ -313,7 +407,6 @@ class TestScreen:
                     self.current_voltage = v
                     self.current_current = i
 
-                    # Zapamiętaj ostatni niezerowy pomiar
                     if v > 0:
                         self.last_valid_voltage = v
                     if i > 0:
@@ -369,13 +462,13 @@ class TestScreen:
                 program    = self.model_info["model_key"],
                 serial     = self.serial_number,
                 mode       = p.get("mode", "WVAC"),
-                vtm        = self.last_valid_voltage / 1000,  # V → kV
-                im         = self.last_valid_current,          # już w mA
+                vtm        = self.last_valid_voltage / 1000,
+                im         = self.last_valid_current,
                 low        = p["current_limit_low"],
                 high       = p["current_limit_high"],
                 result     = result,
                 error_code = error_code,
-                log_dir=self.config.LOG_DIR,  # ← JEDYNA ZMIANA
+                log_dir    = self.config.LOG_DIR,
             )
             print(f"[LOG] Zapisano: {log_path}")
         except Exception as e:
@@ -469,7 +562,6 @@ class TestScreen:
                 next_serial_entry.focus()
                 return
 
-            # Aktualizuj SN i resetuj wszystkie zmienne
             self.serial_number = new_serial
             self.test_result = None
             self.elapsed_time = 0.0
@@ -478,7 +570,6 @@ class TestScreen:
             self.last_valid_voltage = 0.0
             self.last_valid_current = 0.0
 
-            # Reset wyświetlania
             self.voltage_label.config(text="0 V")
             self.current_label.config(text="0.00 mA")
             self.time_label.config(text="0.0 s")
@@ -487,8 +578,12 @@ class TestScreen:
                 text="✓ Gotowy do testu — urządzenie skonfigurowane",
                 fg=self.config.COLOR_ACCENT)
 
-            # Odblokuj przyciski
-            self.start_button.config(state='normal')
+            # Przycisk START odblokuj tylko gdy klapa zamknięta (lub brak interlocka)
+            if self.interlock is None or self._prev_interlock_closed:
+                self.start_button.config(state='normal')
+            else:
+                self.start_button.config(state='disabled')
+
             self.stop_button.config(state='disabled')
             self.back_button.config(state='normal')
 
@@ -496,6 +591,8 @@ class TestScreen:
 
         def back_to_menu():
             dialog.destroy()
+            if self.interlock:               # ← NOWE
+                self.interlock.disconnect()
             if self.device:
                 self.device.disconnect()
             if self.app_ref:

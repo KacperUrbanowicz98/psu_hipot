@@ -15,18 +15,21 @@ class Config:
     WINDOW_HEIGHT = 750
     WINDOW_TITLE = "Reconext Hi-Pot Tester"
 
-    # RS232
-    DEFAULT_COM_PORT = "COM6"
-    DEFAULT_BAUDRATE = 9600
-    DEFAULT_PARITY = "NONE"
+    # RS232 — Chroma Hi-Pot
+    DEFAULT_COM_PORT    = "COM6"
+    DEFAULT_BAUDRATE    = 9600
+    DEFAULT_PARITY      = "NONE"
     DEFAULT_FLOW_CONTROL = "NONE"
+
+    # Interlock — Arduino
+    INTERLOCK_PORT     = "COM5"
+    INTERLOCK_BAUDRATE = 9600
+    INTERLOCK_ENABLED  = True
 
     # Inne
     AUTO_SAVE_RESULTS = True
-    TEST_TIMEOUT = 300
-
-    # ── NOWE: Ścieżka zapisu logów (domyślnie lokalny folder "logs") ──
-    LOG_DIR = "logs"
+    TEST_TIMEOUT      = 300
+    LOG_DIR           = "logs"
 
     # Autoryzowani operatorzy (fallback — nadpisywane z operators.json)
     AUTHORIZED_USERS = [
@@ -40,4 +43,4 @@ class Config:
     def __init__(self):
         sm = SettingsManager()
         self.AUTHORIZED_USERS = sm.load_operators(self.AUTHORIZED_USERS)
-        sm.load_config(self)  # ← wczytuje też LOG_DIR z config.json
+        sm.load_config(self)
