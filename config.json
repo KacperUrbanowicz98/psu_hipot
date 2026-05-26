@@ -3,11 +3,14 @@
     "com_port": "COM6",
     "baudrate": 9600,
     "parity": "NONE",
-    "flow_control": "NONE"
+    "flow_control": "NONE",
+    "interlock_port": "COM12",
+    "interlock_baudrate": 9600,
+    "interlock_enabled": true
   },
   "general": {
     "auto_save_results": true,
     "test_timeout": 300,
-    "log_dir": "logs"
+    "log_dir": "\\\\tpdc02s131\\Uploads\\#183153_Hipot_Test_for_HUB\\In\\Report"
   }
 }

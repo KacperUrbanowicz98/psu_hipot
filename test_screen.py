@@ -4,8 +4,6 @@ import tkinter as tk
 from tkinter import messagebox
 import threading
 import time
-from datetime import datetime
-from hipot_device import ChromaHiPotDevice
 from logger import save_report
 
 
@@ -32,10 +30,22 @@ class TestScreen:
         self.last_valid_voltage = 0.0
         self.last_valid_current = 0.0
 
-        # ── Interlock ───────────────────────────────────────────────────
+        # Interlock
         self.interlock = None
         self._prev_interlock_closed = None
 
+        # Guard — zapobiega podwójnemu test_completed
+        self._test_completed_called = False
+
+        # Okno SN — jedna trwała instancja
+        self.sn_dialog = None
+        self.sn_entry = None
+        self.sn_result_label = None
+        self.sn_status_lbl = None
+
+    # ------------------------------------------------------------------ #
+    # SHOW                                                                 #
+    # ------------------------------------------------------------------ #
     def show(self):
         for widget in self.parent.winfo_children():
             widget.destroy()
@@ -49,15 +59,15 @@ class TestScreen:
         self.create_test_params()
         self.create_live_display()
         self.create_progress_bar()
-        self.create_interlock_status()   # ← NOWE (przed przyciskami)
+        self.create_interlock_status()
         self.create_control_buttons()
         self.create_footer()
 
         self.connect_device()
-        self.connect_interlock()         # ← NOWE
+        self.connect_interlock()
 
     # ------------------------------------------------------------------ #
-    #  HEADER / FOOTER                                                     #
+    # HEADER / FOOTER                                                      #
     # ------------------------------------------------------------------ #
     def create_header(self):
         header_frame = tk.Frame(self.parent, bg=self.config.COLOR_PRIMARY, height=70)
@@ -99,7 +109,14 @@ class TestScreen:
                 "Test w toku",
                 "Nie można wrócić do menu podczas testu!\nZatrzymaj test przyciskiem STOP.")
             return
-        if self.interlock:               # ← NOWE
+        self._cleanup_and_go_back()
+
+    def _cleanup_and_go_back(self):
+        if self.sn_dialog and self.sn_dialog.winfo_exists():
+            self.sn_dialog.grab_release()
+            self.sn_dialog.destroy()
+            self.sn_dialog = None
+        if self.interlock:
             self.interlock.disconnect()
         if self.device:
             self.device.disconnect()
@@ -107,7 +124,7 @@ class TestScreen:
             self.app_ref.show_scan_screen()
 
     # ------------------------------------------------------------------ #
-    #  PANELE INFORMACYJNE                                                 #
+    # PANELE INFORMACYJNE                                                  #
     # ------------------------------------------------------------------ #
     def create_device_info(self):
         info_frame = tk.Frame(self.main_frame, bg=self.config.COLOR_WHITE,
@@ -126,9 +143,10 @@ class TestScreen:
         tk.Label(info_content, text="S/N:", bg=self.config.COLOR_WHITE,
                  fg=self.config.COLOR_PRIMARY, font=("Arial", 11, "bold")
                  ).grid(row=0, column=2, sticky='w', padx=(0, 10))
-        tk.Label(info_content, text=self.serial_number, bg=self.config.COLOR_WHITE,
-                 fg="#333333", font=("Arial", 11)
-                 ).grid(row=0, column=3, sticky='w')
+        self.sn_display_label = tk.Label(
+            info_content, text=self.serial_number, bg=self.config.COLOR_WHITE,
+            fg="#333333", font=("Arial", 11))
+        self.sn_display_label.grid(row=0, column=3, sticky='w')
 
     def create_test_params(self):
         params_frame = tk.Frame(self.main_frame, bg=self.config.COLOR_WHITE,
@@ -161,7 +179,7 @@ class TestScreen:
                  ).grid(row=row, column=col + 1, sticky='w', padx=(0, 30), pady=5)
 
     # ------------------------------------------------------------------ #
-    #  LIVE DISPLAY                                                        #
+    # LIVE DISPLAY                                                         #
     # ------------------------------------------------------------------ #
     def create_live_display(self):
         display_frame = tk.Frame(self.main_frame, bg=self.config.COLOR_WHITE,
@@ -202,7 +220,7 @@ class TestScreen:
         self.time_label.pack(pady=5)
 
     # ------------------------------------------------------------------ #
-    #  PASEK POSTĘPU + PRZYCISKI                                           #
+    # PASEK POSTĘPU                                                        #
     # ------------------------------------------------------------------ #
     def create_progress_bar(self):
         progress_frame = tk.Frame(self.main_frame, bg=self.config.COLOR_BG)
@@ -222,7 +240,7 @@ class TestScreen:
             0, 0, 0, 30, fill=self.config.COLOR_ACCENT, outline="")
 
     # ------------------------------------------------------------------ #
-    #  INTERLOCK — PASEK STATUSU                                           #
+    # INTERLOCK                                                            #
     # ------------------------------------------------------------------ #
     def create_interlock_status(self):
         self.interlock_frame = tk.Frame(
@@ -238,16 +256,24 @@ class TestScreen:
         self.interlock_label.pack(pady=8)
 
     def connect_interlock(self):
+        if not getattr(self.config, "INTERLOCK_ENABLED", True):
+            self.interlock_label.config(
+                text="⚠ Interlock wyłączony — tryb ręczny",
+                fg="#FF9800", bg="#fff8e1")
+            self.start_button.config(state="normal")
+            return
+
         port = getattr(self.config, "INTERLOCK_PORT", None)
         if not port:
             self.interlock_label.config(
                 text="⚠ Brak portu Arduino w konfiguracji — tryb ręczny",
                 fg="#FF9800", bg="#fff8e1")
-            self.interlock_frame.config(bg="#fff8e1")
+            self.start_button.config(state="normal")
             return
 
         from interlock import InterlockMonitor
-        self.interlock = InterlockMonitor(port=port)
+        baud = getattr(self.config, "INTERLOCK_BAUDRATE", 9600)
+        self.interlock = InterlockMonitor(port=port, baudrate=baud)
 
         if self.interlock.connect():
             self.interlock.set_on_change(self._on_interlock_change)
@@ -255,17 +281,19 @@ class TestScreen:
             self.interlock_label.config(
                 text="⏳ Oczekiwanie na stan klapy...",
                 fg="#FF9800", bg="#fff8e1")
-            # Zablokuj START dopóki nie znamy stanu klapy
             self.start_button.config(state="disabled")
         else:
             self.interlock_label.config(
                 text=f"✗ Błąd połączenia z Arduino ({port}) — tryb ręczny",
                 fg=self.config.COLOR_ERROR, bg="#ffebee")
             self.interlock_frame.config(bg="#ffebee")
+            self.start_button.config(state="normal")
 
     def _on_interlock_change(self, closed: bool):
-        """Wywołane z wątku Arduino — przekaż bezpiecznie do Tkinter"""
-        self.parent.after(0, lambda: self._apply_interlock_state(closed))
+        try:
+            self.parent.after(0, lambda: self._apply_interlock_state(closed))
+        except Exception:
+            pass
 
     def _apply_interlock_state(self, closed: bool):
         if closed:
@@ -273,10 +301,21 @@ class TestScreen:
                 text="🔒 Klapa ZAMKNIĘTA — uruchamiam test...",
                 fg=self.config.COLOR_ACCENT, bg="#e8f5e9")
             self.interlock_frame.config(bg="#e8f5e9")
-            if not self.test_running and self.device and self.device.connected:
-                self.start_test()
-            elif not self.test_running:
-                self.start_button.config(state="normal")
+
+            # Zbocze OPEN → CLOSED
+            if not self.test_running and self._prev_interlock_closed == False:
+
+                # Jeśli okno SN jest otwarte — próbuj automatycznie zatwierdzić SN
+                if self.sn_dialog and self.sn_dialog.winfo_exists():
+                    if not self._try_auto_confirm_sn():
+                        # SN nieprawidłowy — nie startuj, pokaż błąd w oknie
+                        self._prev_interlock_closed = closed
+                        return
+
+                if self.device and self.device.connected:
+                    self.start_test()
+                else:
+                    self.start_button.config(state="normal")
         else:
             self.interlock_label.config(
                 text="🔓 Klapa OTWARTA — wyjmij urządzenie i zamknij klapę",
@@ -284,7 +323,6 @@ class TestScreen:
             self.interlock_frame.config(bg="#ffebee")
 
             if self.test_running:
-                # ── PRZERWANIE TESTU przy otwarciu klapy ──────────────────
                 self.test_running = False
                 if self.device:
                     self.device.stop_test()
@@ -305,8 +343,53 @@ class TestScreen:
 
         self._prev_interlock_closed = closed
 
+    def _try_auto_confirm_sn(self) -> bool:
+        """
+        Wywoływane gdy klapa się zamyka a okno SN jest otwarte.
+        Waliduje wpisany SN — jeśli OK, zatwierdza go automatycznie i zamyka okno.
+        Zwraca True jeśli można startować test, False jeśli SN jest błędny.
+        """
+        new_serial = self.sn_entry.get().strip().upper()
+        from models import PowerSupplyModels
+        valid, msg = PowerSupplyModels.validate_serial(
+            self.model_info['model_key'], new_serial)
+
+        if not valid:
+            # Pokaż błąd w oknie SN — operator musi poprawić SN
+            self.sn_status_lbl.config(
+                text=f"✗ {msg} — popraw SN i zamknij klapę ponownie",
+                fg=self.config.COLOR_ERROR)
+            self.sn_entry.config(state='normal')
+            self.sn_entry.focus()
+            return False
+
+        # SN prawidłowy — zatwierdź automatycznie
+        self.serial_number = new_serial
+        self.sn_display_label.config(text=self.serial_number)
+
+        # Reset danych pomiarowych
+        self.test_result = None
+        self.elapsed_time = 0.0
+        self.current_voltage = 0.0
+        self.current_current = 0.0
+        self.last_valid_voltage = 0.0
+        self.last_valid_current = 0.0
+
+        # Reset wyświetlania
+        self.voltage_label.config(text="0 V")
+        self.current_label.config(text="0.00 mA")
+        self.time_label.config(text="0.0 s")
+        self.progress_canvas.coords(self.progress_rect, 0, 0, 0, 30)
+
+        # Zamknij okno SN
+        self.sn_dialog.grab_release()
+        self.sn_dialog.destroy()
+        self.sn_dialog = None
+
+        return True
+
     # ------------------------------------------------------------------ #
-    #  PRZYCISKI STEROWANIA                                                #
+    # PRZYCISKI STEROWANIA                                                 #
     # ------------------------------------------------------------------ #
     def create_control_buttons(self):
         button_frame = tk.Frame(self.main_frame, bg=self.config.COLOR_BG)
@@ -327,10 +410,11 @@ class TestScreen:
         self.stop_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
 
     # ------------------------------------------------------------------ #
-    #  POŁĄCZENIE I KONFIGURACJA                                           #
+    # POŁĄCZENIE Z URZĄDZENIEM                                             #
     # ------------------------------------------------------------------ #
     def connect_device(self):
         try:
+            from hipot_device import ChromaHiPotDevice
             self.device = ChromaHiPotDevice(
                 port=self.config.DEFAULT_COM_PORT,
                 baudrate=self.config.DEFAULT_BAUDRATE)
@@ -361,7 +445,7 @@ class TestScreen:
                 params={
                     'voltage':            p['voltage'],
                     'current_limit_high': p['current_limit_high'] / 1000,
-                    'current_limit_low':  p['current_limit_low']  / 1000,
+                    'current_limit_low':  p['current_limit_low'] / 1000,
                     'duration':           p['test_time'],
                     'ramp_time':          p['ramp_time'],
                     'fall_time':          p['fall_time'],
@@ -374,11 +458,15 @@ class TestScreen:
                 text=f"✗ Błąd konfiguracji: {str(e)}", fg=self.config.COLOR_ERROR)
 
     # ------------------------------------------------------------------ #
-    #  LOGIKA TESTU                                                        #
+    # LOGIKA TESTU                                                         #
     # ------------------------------------------------------------------ #
     def start_test(self):
+        self._test_completed_called = False  # reset guard
         self.test_running = True
         self.start_time = time.time()
+
+        # Upewnij się że S/N jest aktualny w górnym panelu
+        self.sn_display_label.config(text=self.serial_number)
 
         self.start_button.config(state='disabled')
         self.stop_button.config(state='normal')
@@ -437,6 +525,11 @@ class TestScreen:
         self.progress_canvas.coords(self.progress_rect, 0, 0, canvas_width * progress, 30)
 
     def test_completed(self):
+        # Guard — zapobiega podwójnemu zapisowi logu / podwójnemu oknu SN
+        if self._test_completed_called:
+            return
+        self._test_completed_called = True
+
         self.test_running = False
 
         result, data = self.device.get_test_result()
@@ -453,7 +546,7 @@ class TestScreen:
             self.status_label.config(
                 text="✗ TEST NIEZALICZONY (FAIL)", fg=self.config.COLOR_ERROR)
 
-        # ── ZAPIS LOGU ────────────────────────────────────────────────
+        # ── ZAPIS LOGU ──────────────────────────────────────────────────
         p = self.model_info['test_params']
         error_code = str(data.get("error_code", "")) if data else ""
         try:
@@ -462,8 +555,8 @@ class TestScreen:
                 program    = self.model_info["model_key"],
                 serial     = self.serial_number,
                 mode       = p.get("mode", "WVAC"),
-                vtm        = self.last_valid_voltage / 1000,
-                im         = self.last_valid_current,
+                vtm        = self.last_valid_voltage / 1000,  # V → kV
+                im         = self.last_valid_current,          # już w mA
                 low        = p["current_limit_low"],
                 high       = p["current_limit_high"],
                 result     = result,
@@ -473,9 +566,10 @@ class TestScreen:
             print(f"[LOG] Zapisano: {log_path}")
         except Exception as e:
             print(f"[LOG] Błąd zapisu logu: {e}")
-        # ─────────────────────────────────────────────────────────────
+        # ────────────────────────────────────────────────────────────────
 
-        self.show_result_and_next_serial(result, data)
+        # Po 2 sekundach pokaż okno SN
+        self.parent.after(2000, lambda: self.show_result_and_next_serial(result, data))
 
     def test_error(self, error_message):
         self.test_running = False
@@ -489,19 +583,26 @@ class TestScreen:
         self.test_running = False
         if self.device:
             self.device.stop_test()
-        self.start_button.config(state='normal')
+        self.start_button.config(state='disabled')
         self.stop_button.config(state='disabled')
         self.back_button.config(state='normal')
         self.status_label.config(
             text="⚠ Test przerwany przez użytkownika", fg="#FF9800")
 
     # ------------------------------------------------------------------ #
-    #  OKNO WYNIKÓW + KOLEJNY SN                                           #
+    # OKNO SN                                                              #
     # ------------------------------------------------------------------ #
     def show_result_and_next_serial(self, result, data):
+        # Jeśli dialog już istnieje — tylko zaktualizuj wynik i odblokuj pole
+        if self.sn_dialog and self.sn_dialog.winfo_exists():
+            self._update_sn_dialog(result)
+            self.sn_dialog.lift()
+            self.sn_dialog.focus()
+            return
+
         dialog = tk.Toplevel(self.parent)
-        dialog.title("Wynik testu")
-        dialog.geometry("450x420")
+        dialog.title("Następny numer seryjny")
+        dialog.geometry("450x300")
         dialog.configure(bg=self.config.COLOR_WHITE)
         dialog.transient(self.parent)
         dialog.grab_set()
@@ -512,102 +613,54 @@ class TestScreen:
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f'+{x}+{y}')
 
+        self.sn_dialog = dialog
+
         result_color = self.config.COLOR_ACCENT if result == "PASS" else self.config.COLOR_ERROR
 
-        tk.Label(dialog, text="WYNIK TESTU", bg=self.config.COLOR_WHITE,
-                 fg="#666666", font=("Arial", 11)).pack(pady=(20, 5))
+        self.sn_result_label = tk.Label(
+            dialog, text=f"Ostatni wynik: {result}",
+            bg=self.config.COLOR_WHITE,
+            fg=result_color, font=("Arial", 13, "bold"))
+        self.sn_result_label.pack(pady=(15, 5))
 
-        tk.Label(dialog, text=result, bg=self.config.COLOR_WHITE,
-                 fg=result_color, font=("Arial", 40, "bold")).pack()
-
-        details = tk.Frame(dialog, bg=self.config.COLOR_WHITE)
-        details.pack(pady=10)
-
-        for text in [
-            f"Model: {self.model_info['name']}",
-            f"S/N: {self.serial_number}",
-            f"Operator: {self.operator}",
-            f"Data: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        ]:
-            tk.Label(details, text=text, bg=self.config.COLOR_WHITE,
-                     font=("Arial", 10)).pack(anchor='w')
-
-        tk.Frame(dialog, bg="#cccccc", height=1).pack(fill=tk.X, padx=20, pady=10)
+        tk.Frame(dialog, bg="#cccccc", height=1).pack(fill=tk.X, padx=20, pady=(0, 15))
 
         tk.Label(dialog, text="Zeskanuj kolejny numer seryjny:",
                  bg=self.config.COLOR_WHITE, fg="#333333",
                  font=("Arial", 11, "bold")).pack(pady=(0, 5))
 
-        next_serial_entry = tk.Entry(
+        self.sn_entry = tk.Entry(
             dialog, font=("Arial", 14, "bold"), width=28,
             justify='center', relief=tk.SOLID, borderwidth=2)
-        next_serial_entry.pack(pady=5, padx=30)
-        next_serial_entry.focus()
+        self.sn_entry.pack(pady=5, padx=30)
+        self.sn_entry.focus()
 
-        status_lbl = tk.Label(dialog, text="", bg=self.config.COLOR_WHITE,
-                              font=("Arial", 9))
-        status_lbl.pack()
+        self.sn_status_lbl = tk.Label(
+            dialog, text="⬆ Zeskanuj SN i zamknij klapę aby rozpocząć test",
+            bg=self.config.COLOR_WHITE, fg="#888888", font=("Arial", 9))
+        self.sn_status_lbl.pack()
 
-        btn_frame = tk.Frame(dialog, bg=self.config.COLOR_WHITE)
-        btn_frame.pack(pady=15)
-
-        def next_test():
-            new_serial = next_serial_entry.get().strip().upper()
-            from models import PowerSupplyModels
-            valid, msg = PowerSupplyModels.validate_serial(
-                self.model_info['model_key'], new_serial)
-            if not valid:
-                status_lbl.config(text=f"✗ {msg}", fg=self.config.COLOR_ERROR)
-                next_serial_entry.delete(0, tk.END)
-                next_serial_entry.focus()
-                return
-
-            self.serial_number = new_serial
-            self.test_result = None
-            self.elapsed_time = 0.0
-            self.current_voltage = 0.0
-            self.current_current = 0.0
-            self.last_valid_voltage = 0.0
-            self.last_valid_current = 0.0
-
-            self.voltage_label.config(text="0 V")
-            self.current_label.config(text="0.00 mA")
-            self.time_label.config(text="0.0 s")
-            self.progress_canvas.coords(self.progress_rect, 0, 0, 0, 30)
-            self.status_label.config(
-                text="✓ Gotowy do testu — urządzenie skonfigurowane",
-                fg=self.config.COLOR_ACCENT)
-
-            # Przycisk START odblokuj tylko gdy klapa zamknięta (lub brak interlocka)
-            if self.interlock is None or self._prev_interlock_closed:
-                self.start_button.config(state='normal')
-            else:
-                self.start_button.config(state='disabled')
-
-            self.stop_button.config(state='disabled')
-            self.back_button.config(state='normal')
-
-            dialog.destroy()
-
-        def back_to_menu():
-            dialog.destroy()
-            if self.interlock:               # ← NOWE
-                self.interlock.disconnect()
-            if self.device:
-                self.device.disconnect()
-            if self.app_ref:
-                self.app_ref.show_scan_screen()
-
-        next_serial_entry.bind("<Return>", lambda e: next_test())
-
-        tk.Button(btn_frame, text="ZATWIERDŹ",
-                  bg=self.config.COLOR_ACCENT, fg=self.config.COLOR_WHITE,
-                  font=("Arial", 12, "bold"), width=14, height=2,
-                  relief=tk.FLAT, cursor="hand2",
-                  command=next_test).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(btn_frame, text="Powrót do menu",
+        # Przycisk powrotu do menu — jedyny przycisk w oknie
+        tk.Button(dialog, text="Powrót do menu",
                   bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
-                  font=("Arial", 12, "bold"), width=14, height=2,
+                  font=("Arial", 11, "bold"), width=18, height=1,
                   relief=tk.FLAT, cursor="hand2",
-                  command=back_to_menu).pack(side=tk.LEFT, padx=5)
+                  command=self._back_to_menu_from_dialog).pack(pady=15)
+
+    def _update_sn_dialog(self, result):
+        """Aktualizuje wynik w istniejącym oknie SN i odblokuje pole."""
+        result_color = self.config.COLOR_ACCENT if result == "PASS" else self.config.COLOR_ERROR
+        self.sn_result_label.config(text=f"Ostatni wynik: {result}", fg=result_color)
+        self.sn_entry.config(state='normal')
+        self.sn_entry.delete(0, tk.END)
+        self.sn_status_lbl.config(
+            text="⬆ Zeskanuj SN i zamknij klapę aby rozpocząć test",
+            fg="#888888")
+        self.sn_entry.focus()
+
+    def _back_to_menu_from_dialog(self):
+        if self.sn_dialog and self.sn_dialog.winfo_exists():
+            self.sn_dialog.grab_release()
+            self.sn_dialog.destroy()
+            self.sn_dialog = None
+        self._cleanup_and_go_back()

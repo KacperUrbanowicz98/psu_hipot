@@ -1,0 +1,18 @@
+Chroma 19052 Test report
+
+Program:	PSU-000013-00
+S/N:		1122334455
+TIME:		2026/05/26 14:23:26
+Total result:	Pass
+
+STEP:		1
+MODE:		AC
+EXT Name:	
+Vtm:		2.997	KV
+Im:		0.247	mA
+Low:		0.150	mA
+High:		2.500	mA
+Result:		Pass
+Error Code:	
+
+Error Description: 

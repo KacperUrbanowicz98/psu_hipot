@@ -53,6 +53,8 @@ class InterlockMonitor:
     # ------------------------------------------------------------------ #
 
     def _monitor_loop(self):
+        last_forced = 0
+
         while self._running:
             try:
                 if not self._serial or not self._serial.is_open:
@@ -65,10 +67,12 @@ class InterlockMonitor:
                     continue
 
                 closed = (line == "CLOSED")
+                now = time.time()
 
-                # Wywołuj callback tylko przy zmianie stanu
-                if closed != self._last_state:
+                # Wywołuj callback przy zmianie ALBO co 1 sekundę
+                if closed != self._last_state or (now - last_forced) >= 1.0:
                     self._last_state = closed
+                    last_forced = now
                     if self._on_change_cb:
                         self._on_change_cb(closed)
 
