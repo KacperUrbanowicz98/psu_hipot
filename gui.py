@@ -5,6 +5,7 @@ from tkinter import ttk, messagebox
 from config import Config
 from models import PowerSupplyModels
 from admin_panel import AdminPanel
+from stats_manager import StatsManager
 
 
 class HiPotTesterApp:
@@ -13,22 +14,19 @@ class HiPotTesterApp:
         self.root = root
         self.config = Config()
         self.current_user = None
+        self.stats = StatsManager(log_dir=self.config.LOG_DIR)
         self._setup_window()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self._show_login_screen()
 
     def _setup_window(self):
         self.root.title(self.config.WINDOW_TITLE)
-        self.root.geometry(f"{self.config.WINDOW_WIDTH}x{self.config.WINDOW_HEIGHT}")
+        self.root.state("zoomed")
         self.root.configure(bg=self.config.COLOR_BG)
-        self._center_window()
 
-    def _center_window(self):
-        self.root.update_idletasks()
-        w = self.root.winfo_width()
-        h = self.root.winfo_height()
-        x = self.root.winfo_screenwidth()  // 2 - w // 2
-        y = self.root.winfo_screenheight() // 2 - h // 2
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
+    def _on_closing(self):
+        self.stats.flush()
+        self.root.destroy()
 
     # ------------------------------------------------------------------ #
     #  EKRAN LOGOWANIA                                                     #
@@ -111,7 +109,6 @@ class HiPotTesterApp:
         self._create_scan_panel(main_frame)
         self._create_footer()
 
-        # Skrót do panelu admina: Ctrl+Alt+D (3x)
         self._d_press_count = 0
         self._d_press_timer = None
         self.root.bind("<Control-Alt-d>", self._on_config_shortcut)
@@ -201,7 +198,6 @@ class HiPotTesterApp:
                  bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
                  font=("Arial", 20, "bold")).pack(pady=(30, 20))
 
-        # --- Dropdown modelu ---
         tk.Label(scan_panel, text="Wybierz model zasilacza:",
                  bg=self.config.COLOR_WHITE, fg="#333333",
                  font=("Arial", 12)).pack(pady=(10, 5))
@@ -221,7 +217,6 @@ class HiPotTesterApp:
             font=("Arial", 10, "italic"))
         self.sn_length_label.pack(pady=(0, 5))
 
-        # --- Pole SN ---
         tk.Label(scan_panel, text="Zeskanuj lub wprowadź numer seryjny:",
                  bg=self.config.COLOR_WHITE, fg="#333333",
                  font=("Arial", 12)).pack(pady=(10, 5))
@@ -303,7 +298,7 @@ class HiPotTesterApp:
     def _show_test_screen(self, serial, model_info):
         from test_screen import TestScreen
         ts = TestScreen(self.root, self.config, serial, model_info,
-                        self.current_user, app_ref=self)
+                        self.current_user, app_ref=self, stats=self.stats)
         ts.show()
 
     # ------------------------------------------------------------------ #
@@ -359,6 +354,7 @@ class HiPotTesterApp:
                  font=("Arial", 10, "bold")).pack(side=tk.RIGHT, padx=20, pady=10)
 
     def _logout(self):
+        self.stats.flush()
         self.current_user = None
         for widget in self.root.winfo_children():
             widget.destroy()

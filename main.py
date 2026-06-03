@@ -1,6 +1,6 @@
 # main.py
 """
-ReconEXT Hi-Pot Tester
+Reconext Hi-Pot Tester
 Główny plik aplikacji
 """
 import tkinter as tk

@@ -2,6 +2,7 @@
 """Ekran testowania Hi-Pot"""
 import tkinter as tk
 from tkinter import messagebox
+from datetime import datetime
 import threading
 import time
 from logger import save_report
@@ -9,13 +10,14 @@ from logger import save_report
 
 class TestScreen:
 
-    def __init__(self, parent, config, serial_number, model_info, operator, app_ref=None):
+    def __init__(self, parent, config, serial_number, model_info, operator, app_ref=None, stats=None):
         self.parent = parent
         self.config = config
         self.serial_number = serial_number
         self.model_info = model_info
         self.operator = operator
         self.app_ref = app_ref
+        self.stats = stats  # StatsManager lub None
 
         self.device = None
         self.test_running = False
@@ -43,6 +45,15 @@ class TestScreen:
         self.sn_result_label = None
         self.sn_status_lbl = None
 
+        # Etykiety licznika
+        self.lbl_total = None
+        self.lbl_pass = None
+        self.lbl_fail = None
+
+        # Historia 5 ostatnich wyników na ekranie testowym
+        self._recent_results = []
+        self._history_frame = None
+
     # ------------------------------------------------------------------ #
     # SHOW                                                                 #
     # ------------------------------------------------------------------ #
@@ -61,6 +72,8 @@ class TestScreen:
         self.create_progress_bar()
         self.create_interlock_status()
         self.create_control_buttons()
+        self.create_history_panel()
+        self.create_counter_panel()
         self.create_footer()
 
         self.connect_device()
@@ -295,20 +308,26 @@ class TestScreen:
         except Exception:
             pass
 
-    def _apply_interlock_state(self, closed: bool):
+    def _apply_interlock_state(self, closed):
+        #  None = utrata połączenia z Arduino
+        if closed is None:
+            self.interlock_label.config(
+                text="⚠ Utracono połączenie z Arduino — tryb ręczny",
+                fg="#FF9800", bg="#fff8e1")
+            self.interlock_frame.config(bg="#fff8e1")
+            if not self.test_running:
+                self.start_button.config(state="normal")
+            return
+
         if closed:
             self.interlock_label.config(
                 text="🔒 Klapa ZAMKNIĘTA — uruchamiam test...",
                 fg=self.config.COLOR_ACCENT, bg="#e8f5e9")
             self.interlock_frame.config(bg="#e8f5e9")
 
-            # Zbocze OPEN → CLOSED
-            if not self.test_running and self._prev_interlock_closed == False:
-
-                # Jeśli okno SN jest otwarte — próbuj automatycznie zatwierdzić SN
+            if not self.test_running and self._prev_interlock_closed is False:
                 if self.sn_dialog and self.sn_dialog.winfo_exists():
                     if not self._try_auto_confirm_sn():
-                        # SN nieprawidłowy — nie startuj, pokaż błąd w oknie
                         self._prev_interlock_closed = closed
                         return
 
@@ -344,18 +363,12 @@ class TestScreen:
         self._prev_interlock_closed = closed
 
     def _try_auto_confirm_sn(self) -> bool:
-        """
-        Wywoływane gdy klapa się zamyka a okno SN jest otwarte.
-        Waliduje wpisany SN — jeśli OK, zatwierdza go automatycznie i zamyka okno.
-        Zwraca True jeśli można startować test, False jeśli SN jest błędny.
-        """
         new_serial = self.sn_entry.get().strip().upper()
         from models import PowerSupplyModels
         valid, msg = PowerSupplyModels.validate_serial(
             self.model_info['model_key'], new_serial)
 
         if not valid:
-            # Pokaż błąd w oknie SN — operator musi poprawić SN
             self.sn_status_lbl.config(
                 text=f"✗ {msg} — popraw SN i zamknij klapę ponownie",
                 fg=self.config.COLOR_ERROR)
@@ -363,11 +376,9 @@ class TestScreen:
             self.sn_entry.focus()
             return False
 
-        # SN prawidłowy — zatwierdź automatycznie
         self.serial_number = new_serial
         self.sn_display_label.config(text=self.serial_number)
 
-        # Reset danych pomiarowych
         self.test_result = None
         self.elapsed_time = 0.0
         self.current_voltage = 0.0
@@ -375,13 +386,12 @@ class TestScreen:
         self.last_valid_voltage = 0.0
         self.last_valid_current = 0.0
 
-        # Reset wyświetlania
         self.voltage_label.config(text="0 V")
         self.current_label.config(text="0.00 mA")
         self.time_label.config(text="0.0 s")
         self.progress_canvas.coords(self.progress_rect, 0, 0, 0, 30)
+        self.status_label.config(text="Gotowy do rozpoczęcia testu", fg="#666666")
 
-        # Zamknij okno SN
         self.sn_dialog.grab_release()
         self.sn_dialog.destroy()
         self.sn_dialog = None
@@ -408,6 +418,238 @@ class TestScreen:
             font=("Arial", 16, "bold"), height=2, relief=tk.FLAT,
             cursor="hand2", state='disabled', command=self.stop_test)
         self.stop_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+
+    # ------------------------------------------------------------------ #
+    # HISTORIA OSTATNICH WYNIKÓW                                           #
+    # ------------------------------------------------------------------ #
+    def create_history_panel(self):
+        outer = tk.Frame(self.main_frame, bg=self.config.COLOR_WHITE,
+                         relief=tk.RAISED, borderwidth=2)
+        outer.pack(fill=tk.X, pady=(8, 0))
+
+        tk.Label(outer, text="Ostatnie wyniki sesji",
+                 bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
+                 font=("Arial", 10, "bold")).pack(anchor='w', padx=15, pady=(8, 4))
+
+        hdr = tk.Frame(outer, bg=self.config.COLOR_PRIMARY)
+        hdr.pack(fill=tk.X, padx=15)
+
+        for text, width in [("Czas", 10), ("Numer seryjny", 24), ("Model", 18), ("Wynik", 8)]:
+            tk.Label(hdr, text=text,
+                     bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
+                     font=("Arial", 9, "bold"),
+                     width=width, anchor='center', pady=3).pack(side=tk.LEFT)
+
+        self._history_frame = tk.Frame(outer, bg=self.config.COLOR_WHITE)
+        self._history_frame.pack(fill=tk.X, padx=15, pady=(2, 8))
+
+        self._refresh_history_panel()
+
+    def _refresh_history_panel(self):
+        if not self._history_frame or not self._history_frame.winfo_exists():
+            return
+
+        for widget in self._history_frame.winfo_children():
+            widget.destroy()
+
+        if not self._recent_results:
+            tk.Label(self._history_frame,
+                     text="Brak wyników — sesja dopiero wystartowała",
+                     bg=self.config.COLOR_WHITE, fg="#aaaaaa",
+                     font=("Arial", 9, "italic")).pack(pady=6)
+            return
+
+        for idx, entry in enumerate(reversed(self._recent_results)):
+            bg = "#f9f9f9" if idx % 2 == 0 else self.config.COLOR_WHITE
+            row = tk.Frame(self._history_frame, bg=bg)
+            row.pack(fill=tk.X, pady=1)
+
+            result_fg = self.config.COLOR_ACCENT if entry["result"] == "PASS" else self.config.COLOR_ERROR
+
+            for text, width, fg in [
+                (entry["time"], 10, "#666666"),
+                (entry["serial"], 24, "#333333"),
+                (entry["model"], 18, "#333333"),
+                (entry["result"], 8, result_fg),
+            ]:
+                tk.Label(row, text=text, bg=bg, fg=fg,
+                         font=("Arial", 9), width=width,
+                         anchor='center', pady=4).pack(side=tk.LEFT)
+
+    def _add_recent_result(self, serial, model_key, result):
+        self._recent_results.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "serial": serial,
+            "model": model_key,
+            "result": result,
+        })
+        if len(self._recent_results) > 5:
+            self._recent_results = self._recent_results[-5:]
+        self._refresh_history_panel()
+
+    # ------------------------------------------------------------------ #
+    # LICZNIK PRODUKCJI                                                    #
+    # ------------------------------------------------------------------ #
+    def create_counter_panel(self):
+        counter_frame = tk.Frame(self.main_frame, bg="#1a1a2e",
+                                 relief=tk.FLAT, borderwidth=0)
+        counter_frame.pack(fill=tk.X, pady=(8, 0))
+
+        inner = tk.Frame(counter_frame, bg="#1a1a2e")
+        inner.pack(padx=15, pady=6, fill=tk.X)
+
+        tk.Label(inner, text="Sesja:", bg="#1a1a2e", fg="#aaaaaa",
+                 font=("Arial", 10)).pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Label(inner, text="Razem:", bg="#1a1a2e", fg="#cccccc",
+                 font=("Arial", 10)).pack(side=tk.LEFT)
+        self.lbl_total = tk.Label(inner, text="0", bg="#1a1a2e",
+                                  fg="#ffffff", font=("Arial", 11, "bold"))
+        self.lbl_total.pack(side=tk.LEFT, padx=(2, 14))
+
+        tk.Label(inner, text="✓ PASS:", bg="#1a1a2e", fg="#cccccc",
+                 font=("Arial", 10)).pack(side=tk.LEFT)
+        self.lbl_pass = tk.Label(inner, text="0", bg="#1a1a2e",
+                                 fg=self.config.COLOR_ACCENT,
+                                 font=("Arial", 11, "bold"))
+        self.lbl_pass.pack(side=tk.LEFT, padx=(2, 14))
+
+        tk.Label(inner, text="✗ FAIL:", bg="#1a1a2e", fg="#cccccc",
+                 font=("Arial", 10)).pack(side=tk.LEFT)
+        self.lbl_fail = tk.Label(inner, text="0", bg="#1a1a2e",
+                                 fg=self.config.COLOR_ERROR,
+                                 font=("Arial", 11, "bold"))
+        self.lbl_fail.pack(side=tk.LEFT, padx=(2, 20))
+
+        tk.Button(inner, text="↺ Reset sesji",
+                  bg="#2d2d44", fg="#cccccc",
+                  font=("Arial", 9), relief=tk.FLAT,
+                  cursor="hand2", padx=8, pady=3,
+                  command=self._reset_session_confirm
+                  ).pack(side=tk.LEFT, padx=(0, 8))
+
+        tk.Button(inner, text="📊 Statystyki dnia",
+                  bg="#2d2d44", fg="#cccccc",
+                  font=("Arial", 9), relief=tk.FLAT,
+                  cursor="hand2", padx=8, pady=3,
+                  command=self._show_daily_stats
+                  ).pack(side=tk.LEFT)
+
+    def update_counter(self):
+        if not self.stats or self.lbl_total is None:
+            return
+        self.lbl_total.config(text=str(self.stats.session_total))
+        self.lbl_pass.config(text=str(self.stats.session_pass))
+        self.lbl_fail.config(text=str(self.stats.session_fail))
+
+    def _reset_session_confirm(self):
+        if not self.stats:
+            return
+        if messagebox.askyesno(
+                "Reset licznika",
+                "Czy na pewno chcesz zresetować licznik sesji?\n"
+                "Statystyki dzienne NIE zostaną usunięte.",
+                parent=self.parent):
+            self.stats.reset_session()
+            self.update_counter()
+
+    def _show_daily_stats(self):
+        from datetime import date
+        if not self.stats:
+            messagebox.showinfo("Statystyki", "Brak danych — StatsManager nie jest aktywny.",
+                                parent=self.parent)
+            return
+
+        daily = self.stats.get_daily_stats()
+        today = date.today().strftime("%d.%m.%Y")
+
+        win = tk.Toplevel(self.parent)
+        win.title(f"Statystyki dnia — {today}")
+        win.configure(bg=self.config.COLOR_WHITE)
+        win.transient(self.parent)
+        win.grab_set()
+        win.resizable(True, True)
+
+        tk.Label(win, text=f"Statystyki dzienne — {today}",
+                 bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
+                 font=("Arial", 13, "bold")).pack(pady=(15, 10))
+
+        frame = tk.Frame(win, bg=self.config.COLOR_WHITE)
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+
+        headers = ["Operator", "Model", "Mode", "✓ PASS", "✗ FAIL", "Razem"]
+        col_widths = [16, 18, 8, 7, 7, 7]
+        for c, (h, w) in enumerate(zip(headers, col_widths)):
+            tk.Label(frame, text=h, bg=self.config.COLOR_PRIMARY,
+                     fg=self.config.COLOR_WHITE,
+                     font=("Arial", 10, "bold"),
+                     width=w, anchor='center',
+                     relief=tk.FLAT, padx=6, pady=4
+                     ).grid(row=0, column=c, sticky='nsew', padx=1, pady=(0, 2))
+
+        if not daily:
+            tk.Label(frame, text="Brak danych na dziś",
+                     bg=self.config.COLOR_WHITE, fg="#888888",
+                     font=("Arial", 10)).grid(row=1, column=0, columnspan=6, pady=20)
+        else:
+            row_idx = 1
+            total_pass = total_fail = 0
+
+            for operator, rows in sorted(daily.items()):
+                total_pass += sum(r["pass"] for r in rows)
+                total_fail += sum(r["fail"] for r in rows)
+
+                for i, r in enumerate(rows):
+                    bg = "#f9f9f9" if row_idx % 2 == 0 else self.config.COLOR_WHITE
+                    vals = [
+                        operator if i == 0 else "",
+                        r["model"], r["mode"],
+                        str(r["pass"]), str(r["fail"]), str(r["total"])
+                    ]
+                    fgs = [
+                        "#333333", "#333333", "#333333",
+                        self.config.COLOR_ACCENT,
+                        self.config.COLOR_ERROR,
+                        "#333333"
+                    ]
+                    for c, (v, fg) in enumerate(zip(vals, fgs)):
+                        tk.Label(frame, text=v, bg=bg, fg=fg,
+                                 font=("Arial", 10),
+                                 anchor='center', padx=6, pady=3
+                                 ).grid(row=row_idx, column=c,
+                                        sticky='nsew', padx=1, pady=1)
+                    row_idx += 1
+
+            for c in range(6):
+                tk.Frame(frame, bg=self.config.COLOR_PRIMARY, height=2
+                         ).grid(row=row_idx, column=c, sticky='ew', padx=1, pady=4)
+            row_idx += 1
+
+            totals = ["ŁĄCZNIE", "", "",
+                      str(total_pass), str(total_fail),
+                      str(total_pass + total_fail)]
+            t_fgs = ["#333333", "#333333", "#333333",
+                     self.config.COLOR_ACCENT,
+                     self.config.COLOR_ERROR, "#333333"]
+            for c, (v, fg) in enumerate(zip(totals, t_fgs)):
+                tk.Label(frame, text=v, bg="#eef6f0",
+                         fg=fg, font=("Arial", 10, "bold"),
+                         anchor='center', padx=6, pady=4
+                         ).grid(row=row_idx, column=c,
+                                sticky='nsew', padx=1, pady=1)
+
+        tk.Button(win, text="Zamknij",
+                  bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
+                  font=("Arial", 11, "bold"), relief=tk.FLAT,
+                  cursor="hand2", padx=20, pady=6,
+                  command=win.destroy).pack(pady=15)
+
+        win.update_idletasks()
+        w = max(win.winfo_reqwidth() + 40, 620)
+        h = min(win.winfo_reqheight() + 40, 600)
+        x = (win.winfo_screenwidth() // 2) - (w // 2)
+        y = (win.winfo_screenheight() // 2) - (h // 2)
+        win.geometry(f"{w}x{h}+{x}+{y}")
 
     # ------------------------------------------------------------------ #
     # POŁĄCZENIE Z URZĄDZENIEM                                             #
@@ -461,11 +703,10 @@ class TestScreen:
     # LOGIKA TESTU                                                         #
     # ------------------------------------------------------------------ #
     def start_test(self):
-        self._test_completed_called = False  # reset guard
+        self._test_completed_called = False
         self.test_running = True
         self.start_time = time.time()
 
-        # Upewnij się że S/N jest aktualny w górnym panelu
         self.sn_display_label.config(text=self.serial_number)
 
         self.start_button.config(state='disabled')
@@ -490,7 +731,7 @@ class TestScreen:
                 measurements = self.device.read_measurements()
                 if measurements:
                     v = measurements['output_voltage']
-                    i = measurements['measure_current'] * 1000  # A → mA
+                    i = measurements['measure_current'] * 1000
 
                     self.current_voltage = v
                     self.current_current = i
@@ -525,7 +766,6 @@ class TestScreen:
         self.progress_canvas.coords(self.progress_rect, 0, 0, canvas_width * progress, 30)
 
     def test_completed(self):
-        # Guard — zapobiega podwójnemu zapisowi logu / podwójnemu oknu SN
         if self._test_completed_called:
             return
         self._test_completed_called = True
@@ -546,29 +786,51 @@ class TestScreen:
             self.status_label.config(
                 text="✗ TEST NIEZALICZONY (FAIL)", fg=self.config.COLOR_ERROR)
 
-        # ── ZAPIS LOGU ──────────────────────────────────────────────────
         p = self.model_info['test_params']
         error_code = str(data.get("error_code", "")) if data else ""
+
+        # ── ZAPIS LOGU ──────────────────────────────────────────────────
         try:
             log_path = save_report(
-                operator   = self.operator,
-                program    = self.model_info["model_key"],
-                serial     = self.serial_number,
-                mode       = p.get("mode", "WVAC"),
-                vtm        = self.last_valid_voltage / 1000,  # V → kV
-                im         = self.last_valid_current,          # już w mA
-                low        = p["current_limit_low"],
-                high       = p["current_limit_high"],
-                result     = result,
-                error_code = error_code,
-                log_dir    = self.config.LOG_DIR,
+                operator=self.operator,
+                program=self.model_info["model_key"],
+                serial=self.serial_number,
+                mode=p.get("mode", "WVAC"),
+                vtm=self.last_valid_voltage / 1000,
+                im=self.last_valid_current,
+                low=p["current_limit_low"],
+                high=p["current_limit_high"],
+                result=result,
+                error_code=error_code,
+                log_dir=self.config.LOG_DIR,
             )
             print(f"[LOG] Zapisano: {log_path}")
         except Exception as e:
             print(f"[LOG] Błąd zapisu logu: {e}")
         # ────────────────────────────────────────────────────────────────
 
-        # Po 2 sekundach pokaż okno SN
+        # ── STATS ───────────────────────────────────────────────────────
+        if self.stats:
+            try:
+                self.stats.add_result(
+                    operator=self.operator,
+                    model_key=self.model_info["model_key"],
+                    mode=p.get("mode", "WVAC"),
+                    result=result,
+                )
+                self.update_counter()
+            except Exception as e:
+                print(f"[STATS] Błąd zapisu statystyk: {e}")
+        # ────────────────────────────────────────────────────────────────
+
+        # ── HISTORIA NA EKRANIE TESTOWYM ────────────────────────────────
+        self._add_recent_result(
+            serial=self.serial_number,
+            model_key=self.model_info["model_key"],
+            result=result,
+        )
+        # ────────────────────────────────────────────────────────────────
+
         self.parent.after(2000, lambda: self.show_result_and_next_serial(result, data))
 
     def test_error(self, error_message):
@@ -593,7 +855,6 @@ class TestScreen:
     # OKNO SN                                                              #
     # ------------------------------------------------------------------ #
     def show_result_and_next_serial(self, result, data):
-        # Jeśli dialog już istnieje — tylko zaktualizuj wynik i odblokuj pole
         if self.sn_dialog and self.sn_dialog.winfo_exists():
             self._update_sn_dialog(result)
             self.sn_dialog.lift()
@@ -609,7 +870,7 @@ class TestScreen:
         dialog.resizable(False, False)
 
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth()  // 2) - (dialog.winfo_width()  // 2)
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f'+{x}+{y}')
 
@@ -640,7 +901,6 @@ class TestScreen:
             bg=self.config.COLOR_WHITE, fg="#888888", font=("Arial", 9))
         self.sn_status_lbl.pack()
 
-        # Przycisk powrotu do menu — jedyny przycisk w oknie
         tk.Button(dialog, text="Powrót do menu",
                   bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
                   font=("Arial", 11, "bold"), width=18, height=1,
@@ -648,7 +908,6 @@ class TestScreen:
                   command=self._back_to_menu_from_dialog).pack(pady=15)
 
     def _update_sn_dialog(self, result):
-        """Aktualizuje wynik w istniejącym oknie SN i odblokuje pole."""
         result_color = self.config.COLOR_ACCENT if result == "PASS" else self.config.COLOR_ERROR
         self.sn_result_label.config(text=f"Ostatni wynik: {result}", fg=result_color)
         self.sn_entry.config(state='normal')

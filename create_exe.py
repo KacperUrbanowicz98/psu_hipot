@@ -64,6 +64,7 @@ def main():
         "--hidden-import=arduino",
         "--hidden-import=logger",
         "--hidden-import=settings_manager",
+        "--hidden-import=stats_manager"
 
         "main.py"
     ]
