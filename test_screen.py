@@ -723,9 +723,20 @@ class TestScreen:
             p = self.model_info['test_params']
             total_time = p['ramp_time'] + p['test_time'] + p['fall_time']
 
+            # Daj Chromie czas na przejście ze STOP → TESTING
+            # przy 9600 baud każda komenda to ~50-100ms, start_test() wysyła 2 komendy
+            time.sleep(1.5)
+
+            if not self.test_running:
+                return  # zatrzymano zanim urządzenie ruszyło
+
+            min_run_time = 2.0  # nie akceptuj STOPPED przed upływem tego czasu
+
             while self.test_running:
                 status = self.device.get_status()
-                if status == "STOPPED":
+                elapsed = time.time() - self.start_time
+
+                if status == "STOPPED" and elapsed >= min_run_time:
                     break
 
                 measurements = self.device.read_measurements()

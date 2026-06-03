@@ -137,11 +137,18 @@ class ChromaHiPotDevice:
         try:
             response = self.query("SAFEty:STATus?")
             if response:
-                return response.strip().upper()
-            return "UNKNOWN"
+                s = response.strip().upper()
+                # Chroma może zwrócić pusty/śmieciowy wynik zaraz po starcie
+                # Akceptujemy tylko znane stany
+                if s in ("PASS", "FAIL", "STOP", "STOPPED", "TESTING", "RUNNING", "READY", "WAIT"):
+                    return s
+                # Wszystko inne traktujemy jako "urządzenie jeszcze nie odpowiada"
+                print(f"[STATUS] nieznana odpowiedź: '{response}' — traktuję jako TESTING")
+                return "TESTING"
+            return "TESTING"  # brak odpowiedzi = test w toku (nie STOPPED)
         except Exception as e:
             print(f"Błąd pobierania statusu: {e}")
-            return "UNKNOWN"
+            return "TESTING"  # błąd = nie przerywaj pętli
 
     def read_measurements(self) -> Optional[Dict]:
         try:

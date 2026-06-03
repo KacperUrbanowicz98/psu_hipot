@@ -26,7 +26,7 @@ def main():
             extra_data_args += ["--add-data", f"{os.path.abspath(f)};."]
             print(f"[+] Znaleziono {f} — zostanie spakowany")
         else:
-            print(f"[~] Brak {f} — pomijam")
+            print(f"[~] Brak {f} — pomijam (zostanie utworzony przy pierwszym uruchomieniu)")
 
     print("\n" + "=" * 55)
     print("  Hi-Pot PSU - Builder EXE")
@@ -34,9 +34,10 @@ def main():
     print("[*] Buduję .exe, poczekaj...\n")
 
     cmd = [
-        "pyinstaller",
+        sys.executable, "-m", "PyInstaller",   # ← używaj tego samego Pythona co skrypt
         "--onefile",
         "--windowed",
+        "--clean",                              # ← czyści cache przed buildem
         "--name", "Hi-Pot PSU",
 
         # Moduły standardowe
@@ -45,6 +46,7 @@ def main():
         "--hidden-import=tkinter.ttk",
         "--hidden-import=serial",
         "--hidden-import=serial.tools.list_ports",
+        "--hidden-import=serial.tools.list_ports_windows",  # ← NOWE: potrzebne na Windows
         "--hidden-import=threading",
         "--hidden-import=time",
         "--hidden-import=json",
@@ -52,6 +54,7 @@ def main():
         "--hidden-import=os",
         "--hidden-import=datetime",
         "--hidden-import=hashlib",
+        "--hidden-import=pathlib",              # ← NOWE: używane w settings_manager/logger
 
         # Moduły lokalne apki
         "--hidden-import=config",
@@ -64,9 +67,9 @@ def main():
         "--hidden-import=arduino",
         "--hidden-import=logger",
         "--hidden-import=settings_manager",
-        "--hidden-import=stats_manager"
+        "--hidden-import=stats_manager",        # ← PRZECINEK — był tu błąd!
 
-        "main.py"
+        "main.py"                               # ← teraz poprawnie jako osobny element
     ]
 
     # Dodaj JSON-y
@@ -77,10 +80,16 @@ def main():
     print("\n" + "=" * 55)
     if result.returncode == 0:
         exe_path = os.path.join("dist", "Hi-Pot PSU.exe")
-        print(f"[+] SUKCES! Plik EXE gotowy:")
-        print(f"    {os.path.abspath(exe_path)}")
+        if os.path.exists(exe_path):
+            size_mb = os.path.getsize(exe_path) / (1024 * 1024)
+            print(f"[+] SUKCES! Plik EXE gotowy:")
+            print(f"    {os.path.abspath(exe_path)}")
+            print(f"    Rozmiar: {size_mb:.1f} MB")
+        else:
+            print(f"[+] Build zakończony, szukaj w folderze dist/")
     else:
         print(f"[!] BŁĄD podczas budowania (kod: {result.returncode})")
+        print(f"    Sprawdź plik build/Hi-Pot PSU/warn-Hi-Pot PSU.txt")
     print("=" * 55)
 
     input("\nNaciśnij Enter aby zamknąć...")
