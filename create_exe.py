@@ -3,6 +3,40 @@ import subprocess
 import sys
 import os
 
+def create_version_file():
+    """Tworzy plik z metadanymi EXE — poprawia reputację w antywirusach."""
+    content = """VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', 'Reconext'),
+        StringStruct('FileDescription', 'Hi-Pot PSU Tester'),
+        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('InternalName', 'Hi-Pot PSU'),
+        StringStruct('LegalCopyright', 'Reconext 2026'),
+        StringStruct('OriginalFilename', 'Hi-Pot PSU.exe'),
+        StringStruct('ProductName', 'Reconext Hi-Pot PSU'),
+        StringStruct('ProductVersion', '1.0.0.0'),
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    with open("version_info.txt", "w", encoding="utf-8") as f:
+        f.write(content)
+    print("[+] Utworzono version_info.txt")
+
 def main():
     try:
         import PyInstaller
@@ -25,17 +59,20 @@ def main():
         else:
             print(f"[~] Brak {f} — pomijam (zostanie utworzony przy pierwszym uruchomieniu)")
 
+    create_version_file()
+
     print("\n" + "=" * 55)
     print("  Hi-Pot PSU - Builder EXE")
     print("=" * 55)
-    print("[*] Buduję .exe, poczekaj...\n")
+    print("[*] Buduję .exe (tryb onedir), poczekaj...\n")
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onefile",
+        "--onedir",        # ← zmienione z --onefile (nie rozpakowuje do %TEMP%)
         "--windowed",
         "--clean",
         "--name", "Hi-Pot PSU",
+        "--version-file", "version_info.txt",  # ← metadane EXE
 
         "--hidden-import=tkinter",
         "--hidden-import=tkinter.messagebox",
@@ -74,14 +111,18 @@ def main():
 
     print("\n" + "=" * 55)
     if result.returncode == 0:
-        exe_path = os.path.join("dist", "Hi-Pot PSU.exe")
+        # onedir → folder zamiast pojedynczego EXE
+        exe_path = os.path.join("dist", "Hi-Pot PSU", "Hi-Pot PSU.exe")
         if os.path.exists(exe_path):
             size_mb = os.path.getsize(exe_path) / (1024 * 1024)
-            print(f"[+] SUKCES! Plik EXE gotowy:")
-            print(f"    {os.path.abspath(exe_path)}")
-            print(f"    Rozmiar: {size_mb:.1f} MB")
+            folder_path = os.path.join("dist", "Hi-Pot PSU")
+            print(f"[+] SUKCES! Folder z aplikacją gotowy:")
+            print(f"    {os.path.abspath(folder_path)}")
+            print(f"    Uruchamiaj: {os.path.abspath(exe_path)}")
+            print(f"    Rozmiar EXE: {size_mb:.1f} MB")
+            print(f"\n[!] WAŻNE: kopiuj cały folder 'Hi-Pot PSU', nie sam .exe!")
         else:
-            print(f"[+] Build zakończony, szukaj w folderze dist/")
+            print(f"[+] Build zakończony, szukaj w folderze dist/Hi-Pot PSU/")
     else:
         print(f"[!] BŁĄD podczas budowania (kod: {result.returncode})")
         print(f"    Sprawdź plik build/Hi-Pot PSU/warn-Hi-Pot PSU.txt")

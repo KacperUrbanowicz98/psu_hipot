@@ -87,6 +87,7 @@ class ShiftStats:
         self.total  = 0
         self.passed = 0
         self.failed = 0
+        self.retests = 0  # ← tu
 
         self.on_rebuilt = None
 
@@ -96,7 +97,7 @@ class ShiftStats:
         if not self.shift_start or not os.path.isdir(self.log_dir):
             return
 
-        total = passed = failed = 0
+        total = passed = failed = retests = 0
         try:
             for fname in os.listdir(self.log_dir):
                 m = _FNAME_TS_RE.match(fname)
@@ -130,9 +131,10 @@ class ShiftStats:
             return
 
         with self._lock:
-            self.total  += total
-            self.passed += passed
-            self.failed += failed
+            self.total = total
+            self.passed = passed
+            self.failed = failed
+            self.retests = retests
 
         print(f"[SHIFT] Odbudowano z logów: {total} testów "
               f"(PASS={passed} FAIL={failed}), zmiana {self.shift_name} "
@@ -141,35 +143,40 @@ class ShiftStats:
         if self.on_rebuilt:
             self.on_rebuilt()
 
-    def add_result(self, result: str):
+    def add_result(self, result: str, is_duplicate: bool = False):
         num, name, start, end = _get_current_shift()
         with self._lock:
             if num != self.shift_num:
-                self.shift_num   = num
-                self.shift_name  = name
+                self.shift_num = num
+                self.shift_name = name
                 self.shift_start = start
-                self.shift_end   = end
-                self.total  = 0
+                self.shift_end = end
+                self.total = 0
                 self.passed = 0
                 self.failed = 0
-                print(f"[SHIFT] Przełom zmiany → {name}")
+                self.retests = 0  # ← nowe pole
+                print(f"[SHIFT] Przełom zmiany: {name}")
 
-            self.total += 1
-            if result.upper() == "PASS":
-                self.passed += 1
+            if is_duplicate:
+                self.retests += 1  # ← liczymy retest osobno, nie do total
             else:
-                self.failed += 1
+                self.total += 1
+                if result.upper() == "PASS":
+                    self.passed += 1
+                else:
+                    self.failed += 1
 
     def get_snapshot(self) -> dict:
         with self._lock:
             return {
-                "shift_num":   self.shift_num,
-                "shift_name":  self.shift_name,
+                "shift_num": self.shift_num,
+                "shift_name": self.shift_name,
                 "shift_start": self.shift_start,
-                "shift_end":   self.shift_end,
-                "total":       self.total,
-                "passed":      self.passed,
-                "failed":      self.failed,
+                "shift_end": self.shift_end,
+                "total": self.total,
+                "passed": self.passed,
+                "failed": self.failed,
+                "retests": self.retests,  # ← nowe
             }
 
 
@@ -211,6 +218,7 @@ class TestScreen:
         self.sn_entry        = None
         self.sn_result_label = None
         self.sn_status_lbl   = None
+        self.retests = 0
 
         self.lbl_shift_name  = None
         self.lbl_shift_hours = None
@@ -222,6 +230,8 @@ class TestScreen:
         self._history_frame  = None
 
         self.shift_stats: ShiftStats | None = None
+        self._current_sn_is_duplicate = False  # ← tu
+        self._dup_banner = None  # ← i tu jeśli jeszcze nie masz
 
     # ------------------------------------------------------------------ #
     # SHOW                                                                 #
@@ -548,6 +558,7 @@ class TestScreen:
             self.sn_entry.focus()
             return False
 
+        self._current_sn_is_duplicate = False
         self.serial_number = new_serial
         self.sn_display_label.config(text=self.serial_number)
 
@@ -580,14 +591,49 @@ class TestScreen:
         """Sprawdza duplikat SN w tle — nie blokuje GUI ani startu testu."""
         try:
             dup = self.check_serial_duplicate(serial)
+            # Zapisz flagę — test_completed ją odczyta
+            self._current_sn_is_duplicate = dup["found"]
             if dup["found"]:
                 where_txt = "tej zmiany" if dup["where"] == "session" \
                     else f"logów ({dup['last_time']})"
                 result_txt = f" — wynik: {dup['last_result']}" \
                     if dup["last_result"] else ""
-                msg = f"⚠ SN {serial} był już testowany ({where_txt}{result_txt})"
-                self.parent.after(0, lambda: self.status_label.config(
-                    text=msg, fg="#FF9800"))
+                msg_short = f"⚠ DUPLIKAT: SN {serial} był już testowany ({where_txt}{result_txt})"
+                msg_full = f"SN {serial} był już testowany w tej zmianie!\n\n{where_txt}{result_txt}\n\nCzy na pewno chcesz kontynuować?"
+
+                def show_dup_warning():
+                    # 1. Status label — zawsze aktualizuj
+                    self.status_label.config(text=msg_short, fg="#E65100")
+
+                    # 2. Jeśli dialog SN jest otwarty — baner w okienku
+                    if self.sn_dialog and self.sn_dialog.winfo_exists():
+                        self.sn_status_lbl.config(
+                            text=f"⚠ DUPLIKAT! Testowany {where_txt}{result_txt}",
+                            fg="white",
+                            bg="#E65100"
+                        )
+                        # Baner pomarańczowy na górze dialogu (tylko raz)
+                        if not getattr(self, "_dup_banner", None) or \
+                                not self._dup_banner.winfo_exists():
+                            self._dup_banner = tk.Label(
+                                self.sn_dialog,
+                                text=f"⚠  DUPLIKAT — SN już testowany ({where_txt}{result_txt})",
+                                bg="#FF6F00", fg="white",
+                                font=("Arial", 10, "bold"),
+                                pady=6, anchor="center"
+                            )
+                            self._dup_banner.pack(fill=tk.X, padx=0, pady=(0, 4))
+                            self.sn_dialog.lift()
+                    else:
+                        # Dialog SN jeszcze nie istnieje — klasyczny messagebox
+                        messagebox.showwarning(
+                            "Duplikat SN!",
+                            msg_full,
+                            parent=self.parent
+                        )
+
+                self.parent.after(0, show_dup_warning)
+
         except Exception as e:
             print(f"[DUP] Błąd sprawdzania duplikatu: {e}")
 
@@ -601,16 +647,27 @@ class TestScreen:
         self.start_button = tk.Button(
             button_frame, text="START TEST",
             bg=self.config.COLOR_ACCENT, fg=self.config.COLOR_WHITE,
-            font=("Arial", 16, "bold"), height=2, relief=tk.FLAT,
-            cursor="hand2", command=self.start_test)
+            font=('Arial', 16, 'bold'), height=2, relief=tk.FLAT, cursor='hand2',
+            command=self.start_test
+        )
         self.start_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
 
         self.stop_button = tk.Button(
             button_frame, text="STOP",
             bg=self.config.COLOR_ERROR, fg=self.config.COLOR_WHITE,
-            font=("Arial", 16, "bold"), height=2, relief=tk.FLAT,
-            cursor="hand2", state='disabled', command=self.stop_test)
+            font=('Arial', 16, 'bold'), height=2, relief=tk.FLAT, cursor='hand2',
+            state='disabled', command=self.stop_test
+        )
         self.stop_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+
+        # NOWY PRZYCISK
+        self.next_sn_button = tk.Button(
+            button_frame, text="➜ Następny SN",
+            bg='#607D8B', fg=self.config.COLOR_WHITE,
+            font=('Arial', 16, 'bold'), height=2, relief=tk.FLAT, cursor='hand2',
+            state='disabled', command=self._open_sn_dialog_manually
+        )
+        self.next_sn_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
 
     # ------------------------------------------------------------------ #
     # HISTORIA OSTATNICH WYNIKÓW + LICZNIK ZMIANY                         #
@@ -662,6 +719,14 @@ class TestScreen:
                                  fg=self.config.COLOR_ERROR,
                                  font=("Arial", 9, "bold"))
         self.lbl_fail.pack(side=tk.LEFT, padx=(2, 10))
+
+        # ← NOWE: etykieta retestów
+        tk.Label(counter_bar, text="RETEST:", bg=self.config.COLOR_WHITE,
+                 fg="#555555", font=("Arial", 9)).pack(side=tk.LEFT)
+        self.lbl_retests = tk.Label(counter_bar, text="0",
+                                    bg=self.config.COLOR_WHITE,
+                                    fg="#FF9800", font=("Arial", 9, "bold"))
+        self.lbl_retests.pack(side=tk.LEFT, padx=(2, 10))
 
         tk.Button(counter_bar, text="📊 Statystyki",
                   bg="#eeeeee", fg="#555555",
@@ -739,22 +804,22 @@ class TestScreen:
     def update_counter(self):
         if self.lbl_total is None:
             return
-
         if self.shift_stats:
             snap = self.shift_stats.get_snapshot()
-            self.lbl_shift_name.config(text=f"Zmiana {snap['shift_name']}:")
-            if snap["shift_start"] and snap["shift_end"]:
-                hours_txt = (f"{snap['shift_start'].strftime('%H:%M')}–"
-                             f"{snap['shift_end'].strftime('%H:%M')}")
+            self.lbl_shift_name.config(text=f"Zmiana {snap['shift_name']}")
+            if snap['shift_start'] and snap['shift_end']:
+                hours_txt = f"{snap['shift_start'].strftime('%H:%M')}–{snap['shift_end'].strftime('%H:%M')}"
                 self.lbl_shift_hours.config(text=hours_txt)
-            self.lbl_total.config(text=str(snap["total"]))
-            self.lbl_pass.config(text=str(snap["passed"]))
-            self.lbl_fail.config(text=str(snap["failed"]))
-        else:
-            self.lbl_shift_name.config(text="Zmiana ?:")
-            self.lbl_total.config(text="0")
-            self.lbl_pass.config(text="0")
-            self.lbl_fail.config(text="0")
+            self.lbl_total.config(text=str(snap['total']))
+            self.lbl_pass.config(text=str(snap['passed']))
+            self.lbl_fail.config(text=str(snap['failed']))
+
+            # Retest label — tylko jeśli > 0
+            if hasattr(self, 'lbl_retests') and self.lbl_retests:
+                retests = snap.get('retests', 0)
+                self.lbl_retests.config(
+                    text=f"RETEST: {retests}" if retests > 0 else "",
+                )
 
     # ------------------------------------------------------------------ #
     # STATYSTYKI DZIENNE                                                   #
@@ -1095,6 +1160,7 @@ class TestScreen:
         self.start_button.config(state='disabled')
         self.stop_button.config(state='disabled')
         self.back_button.config(state='normal')
+        self.next_sn_button.config(state='normal')
 
         if result == "PASS":
             self.status_label.config(
@@ -1129,7 +1195,8 @@ class TestScreen:
         # ── SHIFT STATS — licznik zmiany ────────────────────────────────
         if self.shift_stats:
             try:
-                self.shift_stats.add_result(result)
+                is_dup = getattr(self, '_current_sn_is_duplicate', False)
+                self.shift_stats.add_result(result, is_duplicate=is_dup)
                 self.parent.after(0, self.update_counter)
             except Exception as e:
                 print(f"[SHIFT] Błąd zapisu statystyk zmiany: {e}")
@@ -1163,6 +1230,7 @@ class TestScreen:
         self.start_button.config(state='normal')
         self.stop_button.config(state='disabled')
         self.back_button.config(state='normal')
+        self.next_sn_button.config(state='disabled')
         self.status_label.config(
             text=f"✗ Błąd testu: {error_message}", fg=self.config.COLOR_ERROR)
 
@@ -1173,6 +1241,7 @@ class TestScreen:
         self.start_button.config(state='disabled')
         self.stop_button.config(state='disabled')
         self.back_button.config(state='normal')
+        self.next_sn_button.config(state='disabled')
         self.status_label.config(
             text="⚠ Test przerwany przez użytkownika", fg="#FF9800")
 
@@ -1259,6 +1328,15 @@ class TestScreen:
     # ------------------------------------------------------------------ #
     # OKNO SN                                                              #
     # ------------------------------------------------------------------ #
+
+    def _open_sn_dialog_manually(self):
+        """Otwiera dialog skanowania SN jeśli nie jest już otwarty."""
+        if self.sn_dialog and self.sn_dialog.winfo_exists():
+            self.sn_dialog.lift()
+            self.sn_dialog.focus()
+            return
+        self.show_result_and_next_serial(self.test_result or "PASS", {})
+
     def show_result_and_next_serial(self, result, data):
         if self.sn_dialog and self.sn_dialog.winfo_exists():
             self._update_sn_dialog(result)
@@ -1312,14 +1390,25 @@ class TestScreen:
                   relief=tk.FLAT, cursor="hand2",
                   command=self._back_to_menu_from_dialog).pack(pady=15)
 
-    def _update_sn_dialog(self, result):
+    def update_sn_dialog(self, result):
+        # Usuń baner duplikatu jeśli istnieje
+        if getattr(self, "_dup_banner", None):
+            try:
+                self._dup_banner.destroy()
+            except Exception:
+                pass
+            self._dup_banner = None
+        self.sn_dialog.configure(bg=self.config.COLOR_WHITE)
+
         result_color = self.config.COLOR_ACCENT if result == "PASS" else self.config.COLOR_ERROR
         self.sn_result_label.config(text=f"Ostatni wynik: {result}", fg=result_color)
-        self.sn_entry.config(state='normal')
+        self.sn_entry.config(state="normal")
         self.sn_entry.delete(0, tk.END)
         self.sn_status_lbl.config(
-            text="⬆ Zeskanuj SN i zamknij klapę aby rozpocząć test",
-            fg="#888888")
+            text="Zeskanuj SN i zamknij klapę aby rozpocząć test",
+            fg="#888888",
+            bg=self.config.COLOR_WHITE
+        )
         self.sn_entry.focus()
 
     def _back_to_menu_from_dialog(self):

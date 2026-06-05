@@ -244,7 +244,70 @@ class HiPotTesterApp:
     def _on_model_selected(self, event=None):
         model_key = self.selected_model.get()
         model_info = PowerSupplyModels.get_model_info(model_key)
-        if model_info:
+        if not model_info:
+            return
+
+        # Zablokuj pole SN dopóki operator nie potwierdzi wyboru profilu
+        self.serial_entry.config(state="disabled")
+        self.confirm_button.config(state="disabled", bg="#AAAAAA")
+        self.sn_length_label.config(text="")
+        self.scan_status_label.config(text="")
+
+        self._confirm_model_dialog(model_key, model_info)
+
+    def _confirm_model_dialog(self, model_key: str, model_info):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Potwierdzenie profilu")
+        dialog.configure(bg=self.config.COLOR_WHITE)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        w, h = 480, 300
+        dialog.update_idletasks()
+        x = self.root.winfo_screenwidth() // 2 - w // 2
+        y = self.root.winfo_screenheight() // 2 - h // 2
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+        # Pasek kolorowy na górze
+        tk.Frame(dialog, bg=self.config.COLOR_PRIMARY, height=8).pack(fill=tk.X)
+
+        tk.Label(
+            dialog,
+            text="Czy wybrano prawidłowy profil?",
+            bg=self.config.COLOR_WHITE,
+            fg=self.config.COLOR_PRIMARY,
+            font=("Arial", 16, "bold")
+        ).pack(pady=(28, 8))
+
+        # Nazwa profilu — duży wyróżniony napis
+        tk.Label(
+            dialog,
+            text=model_key,
+            bg=self.config.COLOR_WHITE,
+            fg=self.config.COLOR_ACCENT,
+            font=("Arial", 24, "bold")
+        ).pack(pady=(0, 6))
+
+        # Opis profilu jeśli istnieje i różni się od klucza
+        desc = model_info.get("description", "")
+        if desc and desc != model_key:
+            tk.Label(
+                dialog,
+                text=desc,
+                bg=self.config.COLOR_WHITE,
+                fg="#666666",
+                font=("Arial", 10)
+            ).pack(pady=(0, 8))
+
+        tk.Frame(dialog, bg="#dddddd", height=1).pack(fill=tk.X, padx=30, pady=(0, 20))
+
+        # Przyciski TAK / NIE
+        btn_frame = tk.Frame(dialog, bg=self.config.COLOR_WHITE)
+        btn_frame.pack()
+
+        def on_yes():
+            dialog.destroy()
             length = model_info.get("serial_length", "?")
             if isinstance(length, list):
                 length_text = " lub ".join(str(x) for x in length)
@@ -252,16 +315,48 @@ class HiPotTesterApp:
                 length_text = str(length)
             self.sn_length_label.config(
                 text=f"Wymagana długość SN: {length_text} znaków")
+            self.serial_entry.config(state="normal")
+            self.confirm_button.config(state="normal", bg=self.config.COLOR_ACCENT)
+            self.confirm_button.bind("<Enter>",
+                lambda e: self.confirm_button.config(bg="#66BB6A"))
+            self.confirm_button.bind("<Leave>",
+                lambda e: self.confirm_button.config(bg=self.config.COLOR_ACCENT))
+            self.serial_entry.delete(0, tk.END)
+            self.scan_status_label.config(text="")
+            self.serial_entry.focus()
 
-        self.serial_entry.config(state="normal")
-        self.confirm_button.config(state="normal", bg=self.config.COLOR_ACCENT)
-        self.confirm_button.bind("<Enter>",
-            lambda e: self.confirm_button.config(bg="#66BB6A"))
-        self.confirm_button.bind("<Leave>",
-            lambda e: self.confirm_button.config(bg=self.config.COLOR_ACCENT))
-        self.serial_entry.delete(0, tk.END)
-        self.scan_status_label.config(text="")
-        self.serial_entry.focus()
+        def on_no():
+            dialog.destroy()
+            self.selected_model.set("")
+            self.sn_length_label.config(text="")
+            self.scan_status_label.config(text="")
+            self.serial_entry.config(state="disabled")
+            self.confirm_button.config(state="disabled", bg="#AAAAAA")
+            self.model_combo.focus()
+
+        tk.Button(
+            btn_frame,
+            text="✓  TAK",
+            bg=self.config.COLOR_ACCENT, fg=self.config.COLOR_WHITE,
+            font=("Arial", 13, "bold"),
+            width=12, height=2,
+            relief=tk.FLAT, cursor="hand2",
+            command=on_yes
+        ).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(
+            btn_frame,
+            text="✗  NIE",
+            bg=self.config.COLOR_ERROR, fg=self.config.COLOR_WHITE,
+            font=("Arial", 13, "bold"),
+            width=12, height=2,
+            relief=tk.FLAT, cursor="hand2",
+            command=on_no
+        ).pack(side=tk.LEFT, padx=10)
+
+        # Skróty klawiszowe
+        dialog.bind("<Return>", lambda e: on_yes())
+        dialog.bind("<Escape>", lambda e: on_no())
 
     def _process_serial(self):
         model_key = self.selected_model.get()

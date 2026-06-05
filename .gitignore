@@ -1,0 +1,22 @@
+# Skompilowane pliki
+dist/
+build/
+*.spec
+version_info.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Środowisko wirtualne
+.venv/
+venv/
+env/
+
+# PyCharm
+.idea/
+
+# Logi aplikacji (opcjonalnie, jeśli nie chcesz ich w repo)
+# logs/
