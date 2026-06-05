@@ -2,57 +2,226 @@
 """Ekran testowania Hi-Pot"""
 import tkinter as tk
 from tkinter import messagebox
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import threading
 import time
+import os
+import re
 from logger import save_report
 
 
+# ======================================================================== #
+#  SHIFT STATS — logika zmian produkcyjnych                                #
+# ======================================================================== #
+
+_SHIFTS = [
+    (1, "I",   6,  14),
+    (2, "II",  14, 22),
+    (3, "III", 22, 6),
+]
+
+_FNAME_TS_RE = re.compile(
+    r'^.+_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.txt$',
+    re.IGNORECASE
+)
+
+
+def _get_current_shift(now=None):
+    if now is None:
+        now = datetime.now()
+    h = now.hour
+    today = now.date()
+
+    for num, name, s, e in _SHIFTS:
+        if s < e:
+            if s <= h < e:
+                start = datetime(today.year, today.month, today.day, s)
+                end   = datetime(today.year, today.month, today.day, e)
+                return num, name, start, end
+        else:
+            if h >= s:
+                start = datetime(today.year, today.month, today.day, s)
+                tomorrow = today + timedelta(days=1)
+                end = datetime(tomorrow.year, tomorrow.month, tomorrow.day, e)
+                return num, name, start, end
+            elif h < e:
+                yesterday = today - timedelta(days=1)
+                start = datetime(yesterday.year, yesterday.month, yesterday.day, s)
+                end   = datetime(today.year, today.month, today.day, e)
+                return num, name, start, end
+
+    start = datetime(today.year, today.month, today.day, 0)
+    return 0, "?", start, start + timedelta(hours=8)
+
+
+def _parse_result_from_file(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.strip().lower().startswith("total result:"):
+                    val = line.split(":", 1)[-1].strip().upper()
+                    return "PASS" if val == "PASS" else "FAIL"
+    except Exception:
+        pass
+    return None
+
+
+class ShiftStats:
+    """
+    Zlicza PASS/FAIL bieżącej zmiany produkcyjnej.
+    Przy starcie odbudowuje licznik z LOG_DIR w wątku tła —
+    odporne na restart komputera, wywalenie prądu itp.
+    """
+
+    def __init__(self, log_dir: str):
+        self.log_dir = log_dir
+        self._lock = threading.Lock()
+        self._app_start = datetime.now()
+
+        num, name, start, end = _get_current_shift()
+        self.shift_num   = num
+        self.shift_name  = name
+        self.shift_start = start
+        self.shift_end   = end
+
+        self.total  = 0
+        self.passed = 0
+        self.failed = 0
+
+        self.on_rebuilt = None
+
+        threading.Thread(target=self._rebuild_from_logs, daemon=True).start()
+
+    def _rebuild_from_logs(self):
+        if not self.shift_start or not os.path.isdir(self.log_dir):
+            return
+
+        total = passed = failed = 0
+        try:
+            for fname in os.listdir(self.log_dir):
+                m = _FNAME_TS_RE.match(fname)
+                if not m:
+                    continue
+                yr, mo, dy, hh, mm, ss = (int(x) for x in m.groups())
+                try:
+                    ts = datetime(yr, mo, dy, hh, mm, ss)
+                except ValueError:
+                    continue
+
+                if not (self.shift_start <= ts < self.shift_end):
+                    continue
+
+                # Pomiń pliki nowsze niż start apki — add_result() już je zliczy
+                if ts >= self._app_start:
+                    continue
+
+                result = _parse_result_from_file(os.path.join(self.log_dir, fname))
+                if result is None:
+                    continue
+
+                total += 1
+                if result == "PASS":
+                    passed += 1
+                else:
+                    failed += 1
+
+        except Exception as e:
+            print(f"[SHIFT] Błąd odbudowy z logów: {e}")
+            return
+
+        with self._lock:
+            self.total  += total
+            self.passed += passed
+            self.failed += failed
+
+        print(f"[SHIFT] Odbudowano z logów: {total} testów "
+              f"(PASS={passed} FAIL={failed}), zmiana {self.shift_name} "
+              f"od {self.shift_start.strftime('%H:%M')}")
+
+        if self.on_rebuilt:
+            self.on_rebuilt()
+
+    def add_result(self, result: str):
+        num, name, start, end = _get_current_shift()
+        with self._lock:
+            if num != self.shift_num:
+                self.shift_num   = num
+                self.shift_name  = name
+                self.shift_start = start
+                self.shift_end   = end
+                self.total  = 0
+                self.passed = 0
+                self.failed = 0
+                print(f"[SHIFT] Przełom zmiany → {name}")
+
+            self.total += 1
+            if result.upper() == "PASS":
+                self.passed += 1
+            else:
+                self.failed += 1
+
+    def get_snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "shift_num":   self.shift_num,
+                "shift_name":  self.shift_name,
+                "shift_start": self.shift_start,
+                "shift_end":   self.shift_end,
+                "total":       self.total,
+                "passed":      self.passed,
+                "failed":      self.failed,
+            }
+
+
+# ======================================================================== #
+#  TEST SCREEN                                                              #
+# ======================================================================== #
+
 class TestScreen:
 
-    def __init__(self, parent, config, serial_number, model_info, operator, app_ref=None, stats=None):
-        self.parent = parent
-        self.config = config
+    def __init__(self, parent, config, serial_number, model_info, operator,
+                 app_ref=None, stats=None):
+        self.parent        = parent
+        self.config        = config
         self.serial_number = serial_number
-        self.model_info = model_info
-        self.operator = operator
-        self.app_ref = app_ref
-        self.stats = stats  # StatsManager lub None
+        self.model_info    = model_info
+        self.operator      = operator
+        self.app_ref       = app_ref
+        self.stats         = stats  # StatsManager (statystyki dzienne) — zostaje
 
-        self.device = None
+        self.device       = None
         self.test_running = False
-        self.test_thread = None
-        self.start_time = None
+        self.test_thread  = None
+        self.start_time   = None
 
         self.current_voltage = 0.0
         self.current_current = 0.0
-        self.elapsed_time = 0.0
-        self.test_result = None
+        self.elapsed_time    = 0.0
+        self.test_result     = None
 
         self.last_valid_voltage = 0.0
         self.last_valid_current = 0.0
 
-        # Interlock
         self.interlock = None
         self._prev_interlock_closed = None
 
-        # Guard — zapobiega podwójnemu test_completed
         self._test_completed_called = False
 
-        # Okno SN — jedna trwała instancja
-        self.sn_dialog = None
-        self.sn_entry = None
+        self.sn_dialog       = None
+        self.sn_entry        = None
         self.sn_result_label = None
-        self.sn_status_lbl = None
+        self.sn_status_lbl   = None
 
-        # Etykiety licznika
-        self.lbl_total = None
-        self.lbl_pass = None
-        self.lbl_fail = None
+        self.lbl_shift_name  = None
+        self.lbl_shift_hours = None
+        self.lbl_total       = None
+        self.lbl_pass        = None
+        self.lbl_fail        = None
 
-        # Historia 5 ostatnich wyników na ekranie testowym
         self._recent_results = []
-        self._history_frame = None
+        self._history_frame  = None
+
+        self.shift_stats: ShiftStats | None = None
 
     # ------------------------------------------------------------------ #
     # SHOW                                                                 #
@@ -75,6 +244,10 @@ class TestScreen:
         self.create_history_panel()
         self.create_counter_panel()
         self.create_footer()
+
+        # ShiftStats inicjalizowany po zbudowaniu GUI (etykiety muszą istnieć)
+        self.shift_stats = ShiftStats(log_dir=self.config.LOG_DIR)
+        self.shift_stats.on_rebuilt = lambda: self.parent.after(0, self.update_counter)
 
         self.connect_device()
         self.connect_interlock()
@@ -309,7 +482,6 @@ class TestScreen:
             pass
 
     def _apply_interlock_state(self, closed):
-        #  None = utrata połączenia z Arduino
         if closed is None:
             self.interlock_label.config(
                 text="⚠ Utracono połączenie z Arduino — tryb ręczny",
@@ -379,10 +551,10 @@ class TestScreen:
         self.serial_number = new_serial
         self.sn_display_label.config(text=self.serial_number)
 
-        self.test_result = None
-        self.elapsed_time = 0.0
-        self.current_voltage = 0.0
-        self.current_current = 0.0
+        self.test_result        = None
+        self.elapsed_time       = 0.0
+        self.current_voltage    = 0.0
+        self.current_current    = 0.0
         self.last_valid_voltage = 0.0
         self.last_valid_current = 0.0
 
@@ -396,7 +568,28 @@ class TestScreen:
         self.sn_dialog.destroy()
         self.sn_dialog = None
 
+        threading.Thread(
+            target=self._check_duplicate_async,
+            args=(new_serial,),
+            daemon=True
+        ).start()
+
         return True
+
+    def _check_duplicate_async(self, serial: str):
+        """Sprawdza duplikat SN w tle — nie blokuje GUI ani startu testu."""
+        try:
+            dup = self.check_serial_duplicate(serial)
+            if dup["found"]:
+                where_txt = "tej zmiany" if dup["where"] == "session" \
+                    else f"logów ({dup['last_time']})"
+                result_txt = f" — wynik: {dup['last_result']}" \
+                    if dup["last_result"] else ""
+                msg = f"⚠ SN {serial} był już testowany ({where_txt}{result_txt})"
+                self.parent.after(0, lambda: self.status_label.config(
+                    text=msg, fg="#FF9800"))
+        except Exception as e:
+            print(f"[DUP] Błąd sprawdzania duplikatu: {e}")
 
     # ------------------------------------------------------------------ #
     # PRZYCISKI STEROWANIA                                                 #
@@ -420,30 +613,80 @@ class TestScreen:
         self.stop_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
 
     # ------------------------------------------------------------------ #
-    # HISTORIA OSTATNICH WYNIKÓW                                           #
+    # HISTORIA OSTATNICH WYNIKÓW + LICZNIK ZMIANY                         #
     # ------------------------------------------------------------------ #
     def create_history_panel(self):
         outer = tk.Frame(self.main_frame, bg=self.config.COLOR_WHITE,
                          relief=tk.RAISED, borderwidth=2)
-        outer.pack(fill=tk.X, pady=(8, 0))
+        outer.pack(fill=tk.X, pady=(6, 0))
 
-        tk.Label(outer, text="Ostatnie wyniki sesji",
+        top = tk.Frame(outer, bg=self.config.COLOR_WHITE)
+        top.pack(fill=tk.X, padx=10, pady=(5, 2))
+
+        tk.Label(top, text="Ostatnie wyniki zmiany",
                  bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
-                 font=("Arial", 10, "bold")).pack(anchor='w', padx=15, pady=(8, 4))
+                 font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+
+        counter_bar = tk.Frame(top, bg=self.config.COLOR_WHITE)
+        counter_bar.pack(side=tk.RIGHT)
+
+        self.lbl_shift_name = tk.Label(counter_bar, text="Zmiana ?:",
+                                       bg=self.config.COLOR_WHITE,
+                                       fg="#888888", font=("Arial", 9))
+        self.lbl_shift_name.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.lbl_shift_hours = tk.Label(counter_bar, text="",
+                                        bg=self.config.COLOR_WHITE,
+                                        fg="#aaaaaa", font=("Arial", 8))
+        self.lbl_shift_hours.pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(counter_bar, text="Razem:", bg=self.config.COLOR_WHITE,
+                 fg="#555555", font=("Arial", 9)).pack(side=tk.LEFT)
+        self.lbl_total = tk.Label(counter_bar, text="0",
+                                  bg=self.config.COLOR_WHITE,
+                                  fg="#222222", font=("Arial", 9, "bold"))
+        self.lbl_total.pack(side=tk.LEFT, padx=(2, 10))
+
+        tk.Label(counter_bar, text="✓ PASS:", bg=self.config.COLOR_WHITE,
+                 fg="#555555", font=("Arial", 9)).pack(side=tk.LEFT)
+        self.lbl_pass = tk.Label(counter_bar, text="0",
+                                 bg=self.config.COLOR_WHITE,
+                                 fg=self.config.COLOR_ACCENT,
+                                 font=("Arial", 9, "bold"))
+        self.lbl_pass.pack(side=tk.LEFT, padx=(2, 10))
+
+        tk.Label(counter_bar, text="✗ FAIL:", bg=self.config.COLOR_WHITE,
+                 fg="#555555", font=("Arial", 9)).pack(side=tk.LEFT)
+        self.lbl_fail = tk.Label(counter_bar, text="0",
+                                 bg=self.config.COLOR_WHITE,
+                                 fg=self.config.COLOR_ERROR,
+                                 font=("Arial", 9, "bold"))
+        self.lbl_fail.pack(side=tk.LEFT, padx=(2, 10))
+
+        tk.Button(counter_bar, text="📊 Statystyki",
+                  bg="#eeeeee", fg="#555555",
+                  font=("Arial", 8), relief=tk.FLAT,
+                  cursor="hand2", padx=4, pady=1,
+                  command=self._show_daily_stats
+                  ).pack(side=tk.LEFT)
 
         hdr = tk.Frame(outer, bg=self.config.COLOR_PRIMARY)
-        hdr.pack(fill=tk.X, padx=15)
+        hdr.pack(fill=tk.X, padx=10, pady=(2, 0))
 
-        for text, width in [("Czas", 10), ("Numer seryjny", 24), ("Model", 18), ("Wynik", 8)]:
+        for text, width in [("Czas", 8), ("Numer seryjny", 22), ("Model", 16), ("Wynik", 7)]:
             tk.Label(hdr, text=text,
                      bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
-                     font=("Arial", 9, "bold"),
-                     width=width, anchor='center', pady=3).pack(side=tk.LEFT)
+                     font=("Arial", 8, "bold"),
+                     width=width, anchor='center', pady=2).pack(side=tk.LEFT)
 
         self._history_frame = tk.Frame(outer, bg=self.config.COLOR_WHITE)
-        self._history_frame.pack(fill=tk.X, padx=15, pady=(2, 8))
+        self._history_frame.pack(fill=tk.X, padx=10, pady=(1, 5))
 
         self._refresh_history_panel()
+
+    def create_counter_panel(self):
+        # Licznik jest teraz w create_history_panel — ta metoda jest pusta
+        pass
 
     def _refresh_history_panel(self):
         if not self._history_frame or not self._history_frame.winfo_exists():
@@ -454,107 +697,69 @@ class TestScreen:
 
         if not self._recent_results:
             tk.Label(self._history_frame,
-                     text="Brak wyników — sesja dopiero wystartowała",
+                     text="Brak wyników — zmiana dopiero wystartowała",
                      bg=self.config.COLOR_WHITE, fg="#aaaaaa",
-                     font=("Arial", 9, "italic")).pack(pady=6)
+                     font=("Arial", 8, "italic")).pack(pady=3)
             return
 
         for idx, entry in enumerate(reversed(self._recent_results)):
-            bg = "#f9f9f9" if idx % 2 == 0 else self.config.COLOR_WHITE
+            bg = "#f5f5f5" if idx % 2 == 0 else self.config.COLOR_WHITE
             row = tk.Frame(self._history_frame, bg=bg)
-            row.pack(fill=tk.X, pady=1)
+            row.pack(fill=tk.X)
 
             result_fg = self.config.COLOR_ACCENT if entry["result"] == "PASS" else self.config.COLOR_ERROR
+            dup_marker = " ⚠" if entry.get("duplicate") else ""
 
             for text, width, fg in [
-                (entry["time"], 10, "#666666"),
-                (entry["serial"], 24, "#333333"),
-                (entry["model"], 18, "#333333"),
-                (entry["result"], 8, result_fg),
+                (entry["time"],  8,  "#666666"),
+                (entry["serial"] + dup_marker, 22,
+                 "#FF9800" if entry.get("duplicate") else "#333333"),
+                (entry["model"], 16, "#333333"),
+                (entry["result"], 7, result_fg),
             ]:
                 tk.Label(row, text=text, bg=bg, fg=fg,
-                         font=("Arial", 9), width=width,
-                         anchor='center', pady=4).pack(side=tk.LEFT)
+                         font=("Arial", 8), width=width,
+                         anchor='center', pady=2).pack(side=tk.LEFT)
 
-    def _add_recent_result(self, serial, model_key, result):
+    def _add_recent_result(self, serial, model_key, result, duplicate=False):
         self._recent_results.append({
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "serial": serial,
-            "model": model_key,
-            "result": result,
+            "time":      datetime.now().strftime("%H:%M:%S"),
+            "serial":    serial,
+            "model":     model_key,
+            "result":    result,
+            "duplicate": duplicate,
         })
         if len(self._recent_results) > 5:
             self._recent_results = self._recent_results[-5:]
         self._refresh_history_panel()
 
     # ------------------------------------------------------------------ #
-    # LICZNIK PRODUKCJI                                                    #
+    # LICZNIK ZMIANY — update                                              #
     # ------------------------------------------------------------------ #
-    def create_counter_panel(self):
-        counter_frame = tk.Frame(self.main_frame, bg="#1a1a2e",
-                                 relief=tk.FLAT, borderwidth=0)
-        counter_frame.pack(fill=tk.X, pady=(8, 0))
-
-        inner = tk.Frame(counter_frame, bg="#1a1a2e")
-        inner.pack(padx=15, pady=6, fill=tk.X)
-
-        tk.Label(inner, text="Sesja:", bg="#1a1a2e", fg="#aaaaaa",
-                 font=("Arial", 10)).pack(side=tk.LEFT, padx=(0, 6))
-
-        tk.Label(inner, text="Razem:", bg="#1a1a2e", fg="#cccccc",
-                 font=("Arial", 10)).pack(side=tk.LEFT)
-        self.lbl_total = tk.Label(inner, text="0", bg="#1a1a2e",
-                                  fg="#ffffff", font=("Arial", 11, "bold"))
-        self.lbl_total.pack(side=tk.LEFT, padx=(2, 14))
-
-        tk.Label(inner, text="✓ PASS:", bg="#1a1a2e", fg="#cccccc",
-                 font=("Arial", 10)).pack(side=tk.LEFT)
-        self.lbl_pass = tk.Label(inner, text="0", bg="#1a1a2e",
-                                 fg=self.config.COLOR_ACCENT,
-                                 font=("Arial", 11, "bold"))
-        self.lbl_pass.pack(side=tk.LEFT, padx=(2, 14))
-
-        tk.Label(inner, text="✗ FAIL:", bg="#1a1a2e", fg="#cccccc",
-                 font=("Arial", 10)).pack(side=tk.LEFT)
-        self.lbl_fail = tk.Label(inner, text="0", bg="#1a1a2e",
-                                 fg=self.config.COLOR_ERROR,
-                                 font=("Arial", 11, "bold"))
-        self.lbl_fail.pack(side=tk.LEFT, padx=(2, 20))
-
-        tk.Button(inner, text="↺ Reset sesji",
-                  bg="#2d2d44", fg="#cccccc",
-                  font=("Arial", 9), relief=tk.FLAT,
-                  cursor="hand2", padx=8, pady=3,
-                  command=self._reset_session_confirm
-                  ).pack(side=tk.LEFT, padx=(0, 8))
-
-        tk.Button(inner, text="📊 Statystyki dnia",
-                  bg="#2d2d44", fg="#cccccc",
-                  font=("Arial", 9), relief=tk.FLAT,
-                  cursor="hand2", padx=8, pady=3,
-                  command=self._show_daily_stats
-                  ).pack(side=tk.LEFT)
-
     def update_counter(self):
-        if not self.stats or self.lbl_total is None:
+        if self.lbl_total is None:
             return
-        self.lbl_total.config(text=str(self.stats.session_total))
-        self.lbl_pass.config(text=str(self.stats.session_pass))
-        self.lbl_fail.config(text=str(self.stats.session_fail))
 
-    def _reset_session_confirm(self):
-        if not self.stats:
-            return
-        if messagebox.askyesno(
-                "Reset licznika",
-                "Czy na pewno chcesz zresetować licznik sesji?\n"
-                "Statystyki dzienne NIE zostaną usunięte.",
-                parent=self.parent):
-            self.stats.reset_session()
-            self.update_counter()
+        if self.shift_stats:
+            snap = self.shift_stats.get_snapshot()
+            self.lbl_shift_name.config(text=f"Zmiana {snap['shift_name']}:")
+            if snap["shift_start"] and snap["shift_end"]:
+                hours_txt = (f"{snap['shift_start'].strftime('%H:%M')}–"
+                             f"{snap['shift_end'].strftime('%H:%M')}")
+                self.lbl_shift_hours.config(text=hours_txt)
+            self.lbl_total.config(text=str(snap["total"]))
+            self.lbl_pass.config(text=str(snap["passed"]))
+            self.lbl_fail.config(text=str(snap["failed"]))
+        else:
+            self.lbl_shift_name.config(text="Zmiana ?:")
+            self.lbl_total.config(text="0")
+            self.lbl_pass.config(text="0")
+            self.lbl_fail.config(text="0")
 
+    # ------------------------------------------------------------------ #
+    # STATYSTYKI DZIENNE                                                   #
+    # ------------------------------------------------------------------ #
     def _show_daily_stats(self):
-        from datetime import date
         if not self.stats:
             messagebox.showinfo("Statystyki", "Brak danych — StatsManager nie jest aktywny.",
                                 parent=self.parent)
@@ -577,7 +782,7 @@ class TestScreen:
         frame = tk.Frame(win, bg=self.config.COLOR_WHITE)
         frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
 
-        headers = ["Operator", "Model", "Mode", "✓ PASS", "✗ FAIL", "Razem"]
+        headers    = ["Operator", "Model", "Mode", "✓ PASS", "✗ FAIL", "Razem"]
         col_widths = [16, 18, 8, 7, 7, 7]
         for c, (h, w) in enumerate(zip(headers, col_widths)):
             tk.Label(frame, text=h, bg=self.config.COLOR_PRIMARY,
@@ -687,7 +892,7 @@ class TestScreen:
                 params={
                     'voltage':            p['voltage'],
                     'current_limit_high': p['current_limit_high'] / 1000,
-                    'current_limit_low':  p['current_limit_low'] / 1000,
+                    'current_limit_low':  p['current_limit_low']  / 1000,
                     'duration':           p['test_time'],
                     'ramp_time':          p['ramp_time'],
                     'fall_time':          p['fall_time'],
@@ -705,7 +910,7 @@ class TestScreen:
     def start_test(self):
         self._test_completed_called = False
         self.test_running = True
-        self.start_time = time.time()
+        self.start_time   = time.time()
 
         self.sn_display_label.config(text=self.serial_number)
 
@@ -723,17 +928,15 @@ class TestScreen:
             p = self.model_info['test_params']
             total_time = p['ramp_time'] + p['test_time'] + p['fall_time']
 
-            # Daj Chromie czas na przejście ze STOP → TESTING
-            # przy 9600 baud każda komenda to ~50-100ms, start_test() wysyła 2 komendy
             time.sleep(1.5)
 
             if not self.test_running:
-                return  # zatrzymano zanim urządzenie ruszyło
+                return
 
-            min_run_time = 2.0  # nie akceptuj STOPPED przed upływem tego czasu
+            min_run_time = 2.0
 
             while self.test_running:
-                status = self.device.get_status()
+                status  = self.device.get_status()
                 elapsed = time.time() - self.start_time
 
                 if status == "STOPPED" and elapsed >= min_run_time:
@@ -820,7 +1023,16 @@ class TestScreen:
             print(f"[LOG] Błąd zapisu logu: {e}")
         # ────────────────────────────────────────────────────────────────
 
-        # ── STATS ───────────────────────────────────────────────────────
+        # ── SHIFT STATS — licznik zmiany ────────────────────────────────
+        if self.shift_stats:
+            try:
+                self.shift_stats.add_result(result)
+                self.parent.after(0, self.update_counter)
+            except Exception as e:
+                print(f"[SHIFT] Błąd zapisu statystyk zmiany: {e}")
+        # ────────────────────────────────────────────────────────────────
+
+        # ── STATS — statystyki dzienne (zostają bez zmian) ──────────────
         if self.stats:
             try:
                 self.stats.add_result(
@@ -829,9 +1041,8 @@ class TestScreen:
                     mode=p.get("mode", "WVAC"),
                     result=result,
                 )
-                self.update_counter()
             except Exception as e:
-                print(f"[STATS] Błąd zapisu statystyk: {e}")
+                print(f"[STATS] Błąd zapisu statystyk dziennych: {e}")
         # ────────────────────────────────────────────────────────────────
 
         # ── HISTORIA NA EKRANIE TESTOWYM ────────────────────────────────
@@ -863,6 +1074,86 @@ class TestScreen:
             text="⚠ Test przerwany przez użytkownika", fg="#FF9800")
 
     # ------------------------------------------------------------------ #
+    # SPRAWDZANIE DUPLIKATU SN W LOGACH                                   #
+    # ------------------------------------------------------------------ #
+    def check_serial_duplicate(self, serial: str) -> dict:
+        """
+        Sprawdza czy dany SN był już testowany w bieżącej zmianie.
+        Szuka w:
+          1. _recent_results (RAM, ostatnie 5 wpisów)
+          2. plikach TXT w LOG_DIR (tylko w przedziale bieżącej zmiany)
+        """
+        for entry in self._recent_results:
+            if entry["serial"].upper() == serial.upper():
+                return {
+                    "found":       True,
+                    "where":       "session",
+                    "last_time":   entry["time"],
+                    "last_result": entry["result"],
+                }
+
+        log_dir = getattr(self.config, "LOG_DIR", "logs")
+        if not os.path.isdir(log_dir):
+            return {"found": False, "where": None, "last_time": None, "last_result": None}
+
+        shift_start = self.shift_stats.shift_start if self.shift_stats else None
+        shift_end   = self.shift_stats.shift_end   if self.shift_stats else None
+
+        pattern = re.compile(
+            r'^' + re.escape(serial.upper()) + r'_(\d{14})\.txt$',
+            re.IGNORECASE
+        )
+
+        matches = []
+        try:
+            for fname in os.listdir(log_dir):
+                m = pattern.match(fname)
+                if not m:
+                    continue
+                ts_str = m.group(1)
+                try:
+                    ts = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
+                except ValueError:
+                    continue
+                if shift_start and shift_end:
+                    if not (shift_start <= ts < shift_end):
+                        continue
+                matches.append((ts_str, fname))
+        except Exception:
+            return {"found": False, "where": None, "last_time": None, "last_result": None}
+
+        if not matches:
+            return {"found": False, "where": None, "last_time": None, "last_result": None}
+
+        matches.sort(key=lambda x: x[0], reverse=True)
+        latest_ts, latest_fname = matches[0]
+
+        try:
+            dt = datetime.strptime(latest_ts, "%Y%m%d%H%M%S")
+            last_time = dt.strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            last_time = latest_ts
+
+        last_result = None
+        try:
+            fpath = os.path.join(log_dir, latest_fname)
+            with open(fpath, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.strip().lower().startswith("total result:"):
+                        val = line.split(":", 1)[-1].strip().upper()
+                        last_result = "PASS" if val == "PASS" else "FAIL"
+                        break
+        except Exception:
+            pass
+
+        return {
+            "found":       True,
+            "where":       "logs",
+            "last_time":   last_time,
+            "last_result": last_result,
+        }
+
+    # ------------------------------------------------------------------ #
     # OKNO SN                                                              #
     # ------------------------------------------------------------------ #
     def show_result_and_next_serial(self, result, data):
@@ -881,7 +1172,7 @@ class TestScreen:
         dialog.resizable(False, False)
 
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        x = (dialog.winfo_screenwidth()  // 2) - (dialog.winfo_width()  // 2)
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f'+{x}+{y}')
 
