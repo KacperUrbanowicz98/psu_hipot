@@ -4,7 +4,6 @@ import sys
 import os
 
 def main():
-    # Sprawdź czy PyInstaller jest zainstalowany
     try:
         import PyInstaller
     except ImportError:
@@ -12,13 +11,11 @@ def main():
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
         print("[+] PyInstaller zainstalowany.\n")
 
-    # Sprawdź czy main.py istnieje
     if not os.path.exists("main.py"):
         print("[!] BRAK PLIKU: main.py")
         input("\nNaciśnij Enter aby wyjść...")
         sys.exit(1)
 
-    # Pliki danych do spakowania (JSON-y)
     data_files = ["models.json", "operators.json", "config.json"]
     extra_data_args = []
     for f in data_files:
@@ -34,19 +31,18 @@ def main():
     print("[*] Buduję .exe, poczekaj...\n")
 
     cmd = [
-        sys.executable, "-m", "PyInstaller",   # ← używaj tego samego Pythona co skrypt
+        sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--windowed",
-        "--clean",                              # ← czyści cache przed buildem
+        "--clean",
         "--name", "Hi-Pot PSU",
 
-        # Moduły standardowe
         "--hidden-import=tkinter",
         "--hidden-import=tkinter.messagebox",
         "--hidden-import=tkinter.ttk",
         "--hidden-import=serial",
         "--hidden-import=serial.tools.list_ports",
-        "--hidden-import=serial.tools.list_ports_windows",  # ← NOWE: potrzebne na Windows
+        "--hidden-import=serial.tools.list_ports_windows",
         "--hidden-import=threading",
         "--hidden-import=time",
         "--hidden-import=json",
@@ -54,9 +50,8 @@ def main():
         "--hidden-import=os",
         "--hidden-import=datetime",
         "--hidden-import=hashlib",
-        "--hidden-import=pathlib",              # ← NOWE: używane w settings_manager/logger
+        "--hidden-import=pathlib",
 
-        # Moduły lokalne apki
         "--hidden-import=config",
         "--hidden-import=models",
         "--hidden-import=gui",
@@ -67,12 +62,12 @@ def main():
         "--hidden-import=arduino",
         "--hidden-import=logger",
         "--hidden-import=settings_manager",
-        "--hidden-import=stats_manager",        # ← PRZECINEK — był tu błąd!
+        "--hidden-import=stats_manager",
+        "--hidden-import=shift_stats",
 
-        "main.py"                               # ← teraz poprawnie jako osobny element
+        "main.py"
     ]
 
-    # Dodaj JSON-y
     cmd += extra_data_args
 
     result = subprocess.run(cmd, capture_output=False, text=True)

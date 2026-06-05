@@ -760,101 +760,204 @@ class TestScreen:
     # STATYSTYKI DZIENNE                                                   #
     # ------------------------------------------------------------------ #
     def _show_daily_stats(self):
-        if not self.stats:
-            messagebox.showinfo("Statystyki", "Brak danych — StatsManager nie jest aktywny.",
-                                parent=self.parent)
-            return
+        from datetime import date as _date, timedelta as _td
+        import json as _json
 
-        daily = self.stats.get_daily_stats()
-        today = date.today().strftime("%d.%m.%Y")
+        log_dir = getattr(self.config, "LOG_DIR", "logs")
 
+        def load_stats_for_day(day: _date) -> dict:
+            path = os.path.join(log_dir, f"stats_{day.strftime('%Y-%m-%d')}.json")
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        raw = _json.load(f)
+                    result = {}
+                    for operator, rows in raw.items():
+                        result[operator] = []
+                        for entry in rows.values():
+                            result[operator].append({
+                                "model": entry["model"],
+                                "mode": entry["mode"],
+                                "pass": entry["pass"],
+                                "fail": entry["fail"],
+                                "total": entry["pass"] + entry["fail"],
+                            })
+                    return result
+                except Exception:
+                    pass
+            return {}
+
+        def is_shift3_active_or_relevant(day: _date) -> bool:
+            """Zwraca True jeśli dzień ma dane z początku III zmiany (22:00–24:00)."""
+            from datetime import datetime as _dt
+            now = _dt.now()
+            # Aktywna III zmiana = dziś i godzina >= 22
+            if day == _date.today() and now.hour >= 22:
+                return True
+            # Poprzedni dzień względem dziś — III zmiana mogła się zacząć
+            if day < _date.today():
+                return True
+            return False
+
+        state = {"day": _date.today()}
+
+        # ── OKNO ────────────────────────────────────────────────────────
         win = tk.Toplevel(self.parent)
-        win.title(f"Statystyki dnia — {today}")
+        win.title("Statystyki dzienne")
         win.configure(bg=self.config.COLOR_WHITE)
         win.transient(self.parent)
         win.grab_set()
         win.resizable(True, True)
 
-        tk.Label(win, text=f"Statystyki dzienne — {today}",
-                 bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
-                 font=("Arial", 13, "bold")).pack(pady=(15, 10))
+        # ── NAWIGACJA ───────────────────────────────────────────────────
+        nav = tk.Frame(win, bg=self.config.COLOR_PRIMARY)
+        nav.pack(fill=tk.X)
 
+        btn_prev = tk.Button(
+            nav, text="◀  poprzedni",
+            bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
+            font=("Arial", 10, "bold"), relief=tk.FLAT,
+            cursor="hand2", padx=14, pady=8,
+            command=lambda: navigate(-1))
+        btn_prev.pack(side=tk.LEFT)
+
+        lbl_nav = tk.Label(
+            nav, text="",
+            bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
+            font=("Arial", 13, "bold"))
+        lbl_nav.pack(side=tk.LEFT, expand=True)
+
+        btn_next = tk.Button(
+            nav, text="następny  ▶",
+            bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
+            font=("Arial", 10, "bold"), relief=tk.FLAT,
+            cursor="hand2", padx=14, pady=8,
+            command=lambda: navigate(+1))
+        btn_next.pack(side=tk.RIGHT)
+
+        # ── GŁÓWNA RAMKA ────────────────────────────────────────────────
         frame = tk.Frame(win, bg=self.config.COLOR_WHITE)
-        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(10, 0))
 
-        headers    = ["Operator", "Model", "Mode", "✓ PASS", "✗ FAIL", "Razem"]
-        col_widths = [16, 18, 8, 7, 7, 7]
-        for c, (h, w) in enumerate(zip(headers, col_widths)):
-            tk.Label(frame, text=h, bg=self.config.COLOR_PRIMARY,
-                     fg=self.config.COLOR_WHITE,
-                     font=("Arial", 10, "bold"),
-                     width=w, anchor='center',
-                     relief=tk.FLAT, padx=6, pady=4
-                     ).grid(row=0, column=c, sticky='nsew', padx=1, pady=(0, 2))
+        # ── STOPKA ──────────────────────────────────────────────────────
+        footer = tk.Frame(win, bg=self.config.COLOR_WHITE)
+        footer.pack(fill=tk.X, padx=20, pady=(4, 0))
 
-        if not daily:
-            tk.Label(frame, text="Brak danych na dziś",
-                     bg=self.config.COLOR_WHITE, fg="#888888",
-                     font=("Arial", 10)).grid(row=1, column=0, columnspan=6, pady=20)
-        else:
-            row_idx = 1
-            total_pass = total_fail = 0
-
-            for operator, rows in sorted(daily.items()):
-                total_pass += sum(r["pass"] for r in rows)
-                total_fail += sum(r["fail"] for r in rows)
-
-                for i, r in enumerate(rows):
-                    bg = "#f9f9f9" if row_idx % 2 == 0 else self.config.COLOR_WHITE
-                    vals = [
-                        operator if i == 0 else "",
-                        r["model"], r["mode"],
-                        str(r["pass"]), str(r["fail"]), str(r["total"])
-                    ]
-                    fgs = [
-                        "#333333", "#333333", "#333333",
-                        self.config.COLOR_ACCENT,
-                        self.config.COLOR_ERROR,
-                        "#333333"
-                    ]
-                    for c, (v, fg) in enumerate(zip(vals, fgs)):
-                        tk.Label(frame, text=v, bg=bg, fg=fg,
-                                 font=("Arial", 10),
-                                 anchor='center', padx=6, pady=3
-                                 ).grid(row=row_idx, column=c,
-                                        sticky='nsew', padx=1, pady=1)
-                    row_idx += 1
-
-            for c in range(6):
-                tk.Frame(frame, bg=self.config.COLOR_PRIMARY, height=2
-                         ).grid(row=row_idx, column=c, sticky='ew', padx=1, pady=4)
-            row_idx += 1
-
-            totals = ["ŁĄCZNIE", "", "",
-                      str(total_pass), str(total_fail),
-                      str(total_pass + total_fail)]
-            t_fgs = ["#333333", "#333333", "#333333",
-                     self.config.COLOR_ACCENT,
-                     self.config.COLOR_ERROR, "#333333"]
-            for c, (v, fg) in enumerate(zip(totals, t_fgs)):
-                tk.Label(frame, text=v, bg="#eef6f0",
-                         fg=fg, font=("Arial", 10, "bold"),
-                         anchor='center', padx=6, pady=4
-                         ).grid(row=row_idx, column=c,
-                                sticky='nsew', padx=1, pady=1)
+        lbl_shift3_warn = tk.Label(
+            footer,
+            text="",
+            bg="#fff8e1", fg="#e65100",
+            font=("Arial", 9), anchor="w",
+            padx=8, pady=4)
 
         tk.Button(win, text="Zamknij",
                   bg=self.config.COLOR_PRIMARY, fg=self.config.COLOR_WHITE,
                   font=("Arial", 11, "bold"), relief=tk.FLAT,
                   cursor="hand2", padx=20, pady=6,
-                  command=win.destroy).pack(pady=15)
+                  command=win.destroy).pack(pady=10)
 
-        win.update_idletasks()
-        w = max(win.winfo_reqwidth() + 40, 620)
-        h = min(win.winfo_reqheight() + 40, 600)
-        x = (win.winfo_screenwidth() // 2) - (w // 2)
-        y = (win.winfo_screenheight() // 2) - (h // 2)
-        win.geometry(f"{w}x{h}+{x}+{y}")
+        # ── RENDER ──────────────────────────────────────────────────────
+        def render(day: _date):
+            for w in frame.winfo_children():
+                w.destroy()
+            lbl_shift3_warn.pack_forget()
+
+            lbl_nav.config(text=f"Statystyki — {day.strftime('%d.%m.%Y')}")
+            btn_next.config(
+                state="disabled" if day >= _date.today() else "normal")
+
+            daily = load_stats_for_day(day)
+
+            headers = ["Operator", "Model", "Mode", "✓ PASS", "✗ FAIL", "Razem"]
+            col_widths = [16, 18, 8, 7, 7, 7]
+
+            for c, (h, cw) in enumerate(zip(headers, col_widths)):
+                tk.Label(frame, text=h,
+                         bg=self.config.COLOR_PRIMARY,
+                         fg=self.config.COLOR_WHITE,
+                         font=("Arial", 10, "bold"),
+                         width=cw, anchor='center',
+                         relief=tk.FLAT, padx=6, pady=4
+                         ).grid(row=0, column=c, sticky='nsew', padx=1, pady=(0, 2))
+
+            if not daily:
+                tk.Label(frame,
+                         text="Brak danych dla tego dnia",
+                         bg=self.config.COLOR_WHITE, fg="#888888",
+                         font=("Arial", 10)
+                         ).grid(row=1, column=0, columnspan=6, pady=20)
+            else:
+                row_idx = 1
+                total_pass = total_fail = 0
+
+                for operator, rows in sorted(daily.items()):
+                    total_pass += sum(r["pass"] for r in rows)
+                    total_fail += sum(r["fail"] for r in rows)
+
+                    for i, r in enumerate(rows):
+                        bg = "#f9f9f9" if row_idx % 2 == 0 else self.config.COLOR_WHITE
+                        vals = [
+                            operator if i == 0 else "",
+                            r["model"], r["mode"],
+                            str(r["pass"]), str(r["fail"]), str(r["total"])
+                        ]
+                        fgs = [
+                            "#333333", "#333333", "#333333",
+                            self.config.COLOR_ACCENT,
+                            self.config.COLOR_ERROR,
+                            "#333333"
+                        ]
+                        for c, (v, fg) in enumerate(zip(vals, fgs)):
+                            tk.Label(frame, text=v, bg=bg, fg=fg,
+                                     font=("Arial", 10),
+                                     anchor='center', padx=6, pady=3
+                                     ).grid(row=row_idx, column=c,
+                                            sticky='nsew', padx=1, pady=1)
+                        row_idx += 1
+
+                # separator
+                for c in range(6):
+                    tk.Frame(frame, bg=self.config.COLOR_PRIMARY, height=2
+                             ).grid(row=row_idx, column=c,
+                                    sticky='ew', padx=1, pady=4)
+                row_idx += 1
+
+                # ŁĄCZNIE
+                totals = ["ŁĄCZNIE", "", "",
+                          str(total_pass), str(total_fail),
+                          str(total_pass + total_fail)]
+                t_fgs = ["#333333", "#333333", "#333333",
+                         self.config.COLOR_ACCENT,
+                         self.config.COLOR_ERROR, "#333333"]
+                for c, (v, fg) in enumerate(zip(totals, t_fgs)):
+                    tk.Label(frame, text=v, bg="#eef6f0",
+                             fg=fg, font=("Arial", 10, "bold"),
+                             anchor='center', padx=6, pady=4
+                             ).grid(row=row_idx, column=c,
+                                    sticky='nsew', padx=1, pady=1)
+
+            # ── OSTRZEŻENIE III ZMIANA ───────────────────────────────────
+            if is_shift3_active_or_relevant(day):
+                next_day = day + _td(days=1)
+                lbl_shift3_warn.config(
+                    text=f"⚠  Zmiana III ({day.strftime('%d.%m')} 22:00 → "
+                         f"{next_day.strftime('%d.%m')} 06:00):  "
+                         f"wyniki po północy znajdziesz w dniu "
+                         f"{next_day.strftime('%d.%m.%Y')}  ▶")
+                lbl_shift3_warn.pack(fill=tk.X)
+
+            win.update_idletasks()
+            w = max(win.winfo_reqwidth() + 60, 620)
+            h = min(win.winfo_reqheight() + 60, 640)
+            x = (win.winfo_screenwidth() // 2) - (w // 2)
+            y = (win.winfo_screenheight() // 2) - (h // 2)
+            win.geometry(f"{w}x{h}+{x}+{y}")
+
+        def navigate(delta: int):
+            state["day"] = state["day"] + _td(days=delta)
+            render(state["day"])
+
+        render(state["day"])
 
     # ------------------------------------------------------------------ #
     # POŁĄCZENIE Z URZĄDZENIEM                                             #
