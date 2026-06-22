@@ -68,12 +68,13 @@ def main():
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onedir",        # ← zmienione z --onefile (nie rozpakowuje do %TEMP%)
+        "--onedir",
         "--windowed",
         "--clean",
         "--name", "Hi-Pot PSU",
-        "--version-file", "version_info.txt",  # ← metadane EXE
+        "--version-file", "version_info.txt",
 
+        # Biblioteki standardowe
         "--hidden-import=tkinter",
         "--hidden-import=tkinter.messagebox",
         "--hidden-import=tkinter.ttk",
@@ -85,10 +86,12 @@ def main():
         "--hidden-import=json",
         "--hidden-import=csv",
         "--hidden-import=os",
+        "--hidden-import=re",
         "--hidden-import=datetime",
         "--hidden-import=hashlib",
         "--hidden-import=pathlib",
 
+        # Moduły projektu
         "--hidden-import=config",
         "--hidden-import=models",
         "--hidden-import=gui",
@@ -101,6 +104,7 @@ def main():
         "--hidden-import=settings_manager",
         "--hidden-import=stats_manager",
         "--hidden-import=shift_stats",
+        "--hidden-import=screenshot_helper",
 
         "main.py"
     ]
@@ -111,7 +115,6 @@ def main():
 
     print("\n" + "=" * 55)
     if result.returncode == 0:
-        # onedir → folder zamiast pojedynczego EXE
         exe_path = os.path.join("dist", "Hi-Pot PSU", "Hi-Pot PSU.exe")
         if os.path.exists(exe_path):
             size_mb = os.path.getsize(exe_path) / (1024 * 1024)
