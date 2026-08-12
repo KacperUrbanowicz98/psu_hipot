@@ -1,23 +1,38 @@
 # stats_manager.py
-"""Statystyki dzienne — źródłem prawdy są pliki TXT w LOG_DIR."""
+"""
+Statystyki dzienne — źródłem prawdy są pliki TXT w LOG_DIR.
+
+Zmiany względem wersji pierwotnej:
+  * count_today() nie otwiera już przy każdym wywołaniu wszystkich plików
+    z katalogu logów. Wynik parsowania pliku jest zapamiętywany (pliki są
+    zapisywane raz i nie zmieniają się), a samo skanowanie katalogu jest
+    dławione. Na udziale sieciowym z kilkoma tysiącami plików poprzednia
+    wersja blokowała GUI na kilka sekund po KAŻDYM teście;
+  * count_today_async() — wersja do wołania z wątku roboczego;
+  * konstruktor nie tworzy katalogów (niedostępny dysk sieciowy wywalał
+    całą aplikację przy starcie); katalog powstaje przy pierwszym zapisie;
+  * set_log_dir() — zmiana ścieżki w panelu administratora działa bez
+    restartu aplikacji.
+"""
 import json
 import os
-import re
-import time
 import random
+import re
+import tempfile
+import threading
+import time
 from datetime import date, datetime
-from typing import Dict
+from typing import Dict, Optional
 
 _STATS_SUBDIR = "Daily PSU Hi-Pot stats"
 
-# Regex do parsowania nazwy pliku: SN_YYYYMMDDHHmmss.txt
+# Nazwa pliku: SN_YYYYMMDDHHmmss.txt (opcjonalny sufiks _2 przy kolizji)
 _FNAME_RE = re.compile(
-    r'^.+_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.txt$',
-    re.IGNORECASE
-)
+    r'^(?P<sn>.+)_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:_\d+)?\.txt$',
+    re.IGNORECASE)
 
 
-def _parse_result_from_file(filepath: str):
+def _parse_result_from_file(filepath: str) -> Optional[str]:
     """Czyta 'Total result: Pass/Fail' z pliku TXT."""
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
@@ -30,97 +45,148 @@ def _parse_result_from_file(filepath: str):
     return None
 
 
-def _parse_sn_from_filename(fname: str) -> str:
-    """Wyciąga SN z nazwy pliku: SN_YYYYMMDDHHmmss.txt → SN"""
+def _parse_fname(fname: str):
+    """Zwraca (SN, datetime) albo None."""
     m = _FNAME_RE.match(fname)
     if not m:
-        return ""
-    return fname.rsplit("_", 1)[0].upper()
+        return None
+    try:
+        ts = datetime(int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                      int(m.group(5)), int(m.group(6)), int(m.group(7)))
+    except ValueError:
+        return None
+    return m.group("sn").upper(), ts
 
 
 class StatsManager:
 
+    SCAN_INTERVAL = 3.0        # [s] minimalny odstęp między skanami katalogu
+
     def __init__(self, log_dir: str):
-        self.log_dir    = log_dir
-        self.stats_dir  = os.path.join(log_dir, _STATS_SUBDIR)
-        os.makedirs(self.stats_dir, exist_ok=True)
+        self.log_dir   = log_dir
+        self.stats_dir = os.path.join(log_dir, _STATS_SUBDIR)
 
         # Liczniki sesji (używane przez test_screen.py)
         self.session_pass   = 0
         self.session_fail   = 0
         self.session_retest = 0
 
+        self.last_error: Optional[str] = None
+
+        self._cache_lock  = threading.Lock()
+        self._file_cache: Dict[str, Optional[str]] = {}   # fname → PASS/FAIL
+        self._last_scan   = 0.0
+        self._last_result = {"total": 0, "passed": 0, "failed": 0,
+                             "duplicates": 0, "stale": True}
+        self._cache_day: Optional[date] = None
+        self._scanning = False
+
     # ------------------------------------------------------------------ #
-    # ŚCIEŻKA PLIKU JSON                                                   #
+    def set_log_dir(self, log_dir: str):
+        """Przełącza katalog logów w locie (po zmianie w panelu admina)."""
+        if log_dir == self.log_dir:
+            return
+        self.log_dir   = log_dir
+        self.stats_dir = os.path.join(log_dir, _STATS_SUBDIR)
+        with self._cache_lock:
+            self._file_cache.clear()
+            self._last_scan = 0.0
+            self._cache_day = None
+
+    def _ensure_stats_dir(self) -> bool:
+        try:
+            os.makedirs(self.stats_dir, exist_ok=True)
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"[STATS] Brak dostępu do {self.stats_dir}: {e}")
+            return False
+
     # ------------------------------------------------------------------ #
-    def _stats_path(self, for_date: date = None) -> str:
+    # PLIK JSON PER DZIEŃ                                                 #
+    # ------------------------------------------------------------------ #
+    def _stats_path(self, for_date: Optional[date] = None) -> str:
         d = (for_date or date.today()).strftime("%Y-%m-%d")
         return os.path.join(self.stats_dir, f"stats_{d}.json")
 
-    def _load(self, for_date: date = None) -> dict:
+    def _load(self, for_date: Optional[date] = None) -> dict:
         path = self._stats_path(for_date)
-        if os.path.exists(path):
-            try:
+        try:
+            if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[STATS] Błąd odczytu {path}: {e}")
         return {}
 
-    def _save(self, data: dict, for_date: date = None):
-        """Atomowy zapis — bezpieczny przy dwóch komputerach na tym samym udziale."""
+    def _save(self, data: dict, for_date: Optional[date] = None) -> bool:
+        """Atomowy zapis — bezpieczny przy kilku stanowiskach na tym samym udziale."""
+        if not self._ensure_stats_dir():
+            return False
         path = self._stats_path(for_date)
+        folder = os.path.dirname(path)
         for attempt in range(3):
+            tmp = None
             try:
-                tmp = path + f".tmp{os.getpid()}"
-                with open(tmp, "w", encoding="utf-8") as f:
+                fd, tmp = tempfile.mkstemp(dir=folder, prefix=".stats_", suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, path)  # atomowe — nie nadpisze w połowie zapisu
-                return
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+                self.last_error = None
+                return True
             except Exception as e:
+                self.last_error = str(e)
                 print(f"[STATS] Retry zapisu ({attempt + 1}/3): {e}")
+                try:
+                    if tmp and os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
                 time.sleep(random.uniform(0.05, 0.2))
+        print(f"[STATS] NIE UDAŁO SIĘ zapisać {path}")
+        return False
 
     # ------------------------------------------------------------------ #
-    # DODAJ WYNIK                                                          #
+    # DODAJ WYNIK                                                         #
     # ------------------------------------------------------------------ #
     def add_result(self, operator: str, model_key: str, mode: str,
-                   result: str, is_retest: bool = False):
+                   result: str, is_retest: bool = False) -> bool:
         """Zapisuje wynik do JSON per-operator i aktualizuje liczniki sesji."""
-        # Liczniki sesji
         if is_retest:
             self.session_retest += 1
-        elif result == "PASS":
+        elif str(result).upper() == "PASS":
             self.session_pass += 1
         else:
             self.session_fail += 1
 
-        # Zapis do JSON (widok per-operator w oknie Statystyki)
         target_date = date.today()
         data = self._load(target_date)
-        if operator not in data:
-            data[operator] = {}
+        operator = str(operator or "UNKNOWN")
+        rows = data.setdefault(operator, {})
         key = f"{model_key}|{mode}"
-        if key not in data[operator]:
-            data[operator][key] = {
-                "model": model_key, "mode": mode,
-                "pass": 0, "fail": 0, "retest": 0,
-            }
-        entry = data[operator][key]
-        if "retest" not in entry:
-            entry["retest"] = 0
+        entry = rows.setdefault(key, {"model": model_key, "mode": mode,
+                                      "pass": 0, "fail": 0, "retest": 0})
+        entry.setdefault("retest", 0)
 
         if is_retest:
             entry["retest"] += 1
-        elif result == "PASS":
+        elif str(result).upper() == "PASS":
             entry["pass"] += 1
         else:
             entry["fail"] += 1
 
-        self._save(data, target_date)
+        ok = self._save(data, target_date)
+
+        # Nowy plik wyniku pojawi się w katalogu — wymuś świeży skan.
+        with self._cache_lock:
+            self._last_scan = 0.0
+        return ok
 
     # ------------------------------------------------------------------ #
-    # RESET SESJI                                                          #
+    # RESET SESJI                                                         #
     # ------------------------------------------------------------------ #
     def reset_session(self):
         self.session_pass   = 0
@@ -132,84 +198,132 @@ class StatsManager:
         return self.session_pass + self.session_fail
 
     # ------------------------------------------------------------------ #
-    # GŁÓWNY LICZNIK — czyta z plików TXT (niezawodne)                    #
+    # GŁÓWNY LICZNIK — czyta z plików TXT                                 #
     # ------------------------------------------------------------------ #
-    def count_today(self) -> dict:
+    def count_today(self, force: bool = False) -> dict:
         """
-        Liczy PASS/FAIL/duplikaty dla dzisiejszego dnia
-        bezpośrednio z plików TXT w LOG_DIR.
-        Duplikat = ten sam SN pojawia się więcej niż raz dzisiaj.
-        Zwraca: {total, passed, failed, duplicates}
+        Liczy PASS/FAIL/duplikaty dla dzisiejszego dnia z plików TXT.
+        Duplikat = ten sam SN pojawia się dziś więcej niż raz.
+        Zwraca zapamiętany wynik jeśli ostatni skan był < SCAN_INTERVAL temu.
         """
         today = date.today()
-        if not os.path.isdir(self.log_dir):
-            return {"total": 0, "passed": 0, "failed": 0, "duplicates": 0}
+        now = time.time()
 
-        total = passed = failed = duplicates = 0
-        seen_sns: dict[str, int] = {}
+        with self._cache_lock:
+            fresh = (not force
+                     and self._cache_day == today
+                     and (now - self._last_scan) < self.SCAN_INTERVAL)
+            if fresh:
+                return dict(self._last_result)
+            if self._cache_day != today:
+                self._file_cache.clear()
+            self._cache_day = today
 
+        result = self._scan_today(today)
+
+        with self._cache_lock:
+            self._last_scan = time.time()
+            self._last_result = result
+        return dict(result)
+
+    def count_today_async(self, callback):
+        """
+        Skanuje w wątku tła i woła callback(dict).
+        Callback NIE jest wołany z wątku GUI — użyj root.after().
+        """
+        with self._cache_lock:
+            if self._scanning:
+                return
+            self._scanning = True
+
+        def worker():
+            try:
+                res = self.count_today(force=True)
+            except Exception as e:
+                print(f"[STATS] Błąd skanu w tle: {e}")
+                res = dict(self._last_result)
+            finally:
+                with self._cache_lock:
+                    self._scanning = False
+            try:
+                callback(res)
+            except Exception as e:
+                print(f"[STATS] Błąd callbacku statystyk: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _scan_today(self, today: date) -> dict:
+        out = {"total": 0, "passed": 0, "failed": 0,
+               "duplicates": 0, "stale": False}
         try:
+            if not os.path.isdir(self.log_dir):
+                out["stale"] = True
+                return out
+
             entries = []
             for fname in os.listdir(self.log_dir):
-                m = _FNAME_RE.match(fname)
-                if not m:
+                parsed = _parse_fname(fname)
+                if not parsed:
                     continue
-                yr, mo, dy, hh, mm, ss = (int(x) for x in m.groups())
-                try:
-                    ts = datetime(yr, mo, dy, hh, mm, ss)
-                except ValueError:
-                    continue
+                sn, ts = parsed
                 if ts.date() != today:
                     continue
-                entries.append((ts, fname))
+                entries.append((ts, fname, sn))
 
-            entries.sort(key=lambda x: x[0])
+            entries.sort(key=lambda x: (x[0], x[1]))
 
-            for ts, fname in entries:
-                sn     = _parse_sn_from_filename(fname)
-                result = _parse_result_from_file(
-                    os.path.join(self.log_dir, fname))
-                if result is None:
+            seen_sns: Dict[str, int] = {}
+            for ts, fname, sn in entries:
+                with self._cache_lock:
+                    cached = self._file_cache.get(fname, "___MISS___")
+                if cached == "___MISS___":
+                    cached = _parse_result_from_file(
+                        os.path.join(self.log_dir, fname))
+                    with self._cache_lock:
+                        self._file_cache[fname] = cached
+                if cached is None:
                     continue
 
                 seen_sns[sn] = seen_sns.get(sn, 0) + 1
                 if seen_sns[sn] > 1:
-                    duplicates += 1
-                    continue  # duplikat nie idzie do totalu
+                    out["duplicates"] += 1
+                    continue          # duplikat nie wchodzi do totalu
 
-                total += 1
-                if result == "PASS":
-                    passed += 1
+                out["total"] += 1
+                if cached == "PASS":
+                    out["passed"] += 1
                 else:
-                    failed += 1
+                    out["failed"] += 1
 
         except Exception as e:
+            self.last_error = str(e)
             print(f"[STATS] Błąd count_today: {e}")
+            out["stale"] = True
 
-        return {
-            "total":      total,
-            "passed":     passed,
-            "failed":     failed,
-            "duplicates": duplicates,
-        }
+        return out
 
     # ------------------------------------------------------------------ #
-    # WIDOK PER-OPERATOR (z JSON)                                          #
+    # WIDOK PER-OPERATOR (z JSON)                                         #
     # ------------------------------------------------------------------ #
-    def get_daily_stats(self, for_date: date = None) -> Dict[str, list]:
+    def get_daily_stats(self, for_date: Optional[date] = None) -> Dict[str, list]:
         data = self._load(for_date)
         result = {}
         for operator, rows in data.items():
+            if not isinstance(rows, dict):
+                continue
             result[operator] = []
             for entry in rows.values():
-                result[operator].append({
-                    "model":  entry["model"],
-                    "mode":   entry.get("mode", "AC"),
-                    "pass":   entry["pass"],
-                    "fail":   entry["fail"],
-                    "retest": entry.get("retest", 0),
-                    "total":  entry["pass"] + entry["fail"],
-                })
+                try:
+                    result[operator].append({
+                        "model":  entry["model"],
+                        "mode":   entry.get("mode", "AC"),
+                        "pass":   entry["pass"],
+                        "fail":   entry["fail"],
+                        "retest": entry.get("retest", 0),
+                        "total":  entry["pass"] + entry["fail"],
+                    })
+                except (KeyError, TypeError):
+                    continue
         return result
 
     def flush(self):

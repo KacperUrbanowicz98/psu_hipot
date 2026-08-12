@@ -11,6 +11,6 @@
   "general": {
     "auto_save_results": true,
     "test_timeout": 300,
-    "log_dir": "C:\\Users\\kacper.urbanowicz\\PycharmProjects\\PSU_HiPot\\logs"
+    "log_dir": "\\\\tpdc02s131\\Uploads\\#183153_Hipot_Test_for_HUB\\In\\Report"
   }
 }

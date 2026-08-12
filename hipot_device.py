@@ -1,227 +1,381 @@
 # hipot_device.py
 """
-Moduł komunikacji z urządzeniem Hi-Pot Chroma
-"""
-import serial
-import time
-from typing import Optional, Tuple, Dict
+Moduł komunikacji z urządzeniem Hi-Pot Chroma (RS232 / SCPI).
 
-OVERFLOW = 9.0e+37  # Chroma zwraca tę wartość gdy brak pomiaru
+Zmiany względem wersji pierwotnej:
+  * cały dostęp do portu jest serializowany blokadą — wcześniej wątek testu
+    (odczyt pomiarów) i wątek GUI (przycisk STOP / otwarcie klapy) pisały do
+    portu jednocześnie, co mieszało ramki i dawało losowe odpowiedzi;
+  * nieudane connect() nie zostawia otwartego portu (wcześniej port zostawał
+    zablokowany aż do restartu aplikacji);
+  * kod oceny wyniku parsowany liczbowo, nie porównaniem tekstu;
+  * licznik błędów komunikacji — pozwala odróżnić "test trwa" od "zerwany kabel".
+"""
+import threading
+import time
+from typing import Dict, Optional, Tuple
+
+import serial
+
+OVERFLOW = 9.0e+37     # Chroma zwraca tę wartość gdy brak pomiaru
+PASS_JUDGMENT_CODE = 116
+
+# Stany zwracane przez SAFEty:STATus? które oznaczają, że test się zakończył.
+_FINISHED_TOKENS = ("STOP", "PASS", "FAIL", "READY", "OFF")
 
 
 class ChromaHiPotDevice:
     """Klasa obsługująca komunikację z testerem Hi-Pot Chroma przez RS232"""
+
+    CMD_DELAY = 0.08          # przerwa po każdej komendzie (wymóg Chromy)
+    READ_TIMEOUT = 2.0
 
     def __init__(self, port: str = "COM6", baudrate: int = 9600):
         self.port = port
         self.baudrate = baudrate
         self.serial = None
         self.connected = False
+        self.idn = ""
+        self.comm_errors = 0          # kolejne nieudane transakcje
+        self._lock = threading.RLock()
 
+    # ------------------------------------------------------------------ #
+    # POŁĄCZENIE                                                          #
+    # ------------------------------------------------------------------ #
     def connect(self) -> bool:
-        try:
-            self.serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=2
-            )
-            time.sleep(0.5)
-            self.connected = True
+        with self._lock:
+            self._force_close()
+            try:
+                self.serial = serial.Serial(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=self.READ_TIMEOUT,
+                    write_timeout=2,
+                )
+                time.sleep(0.5)
+                self.serial.reset_input_buffer()
+                self.serial.reset_output_buffer()
+                self.connected = True
+                self.comm_errors = 0
 
-            self.send_command("*IDN?")
-            response = self.read_response()
-            if response:
-                print(f"Połączono z: {response}")
+                response = self.query("*IDN?")
+                if not response:
+                    print("[HIPOT] Brak odpowiedzi na *IDN? — rozłączam")
+                    self._force_close()
+                    return False
+
+                self.idn = response
+                print(f"[HIPOT] Połączono z: {response}")
 
                 # Odblokowanie klawiatury (keylock)
                 self.send_command("SYST:KLOC OFF")
                 time.sleep(0.3)
                 err = self.query("SYST:ERR?")
-                print(f"[KEYLOCK] SYST:KLOC OFF  →  '{err}'")
-
+                print(f"[HIPOT] SYST:KLOC OFF → '{err}'")
                 return True
-            return False
 
-        except Exception as e:
-            print(f"Błąd połączenia: {e}")
-            self.connected = False
-            return False
+            except Exception as e:
+                print(f"[HIPOT] Błąd połączenia: {e}")
+                self._force_close()
+                return False
 
-    def disconnect(self):
-        if self.serial and self.serial.is_open:
-            self.stop_test()
-            self.serial.close()
+    def _force_close(self):
+        """Zamyka port bezwarunkowo — bez wysyłania czegokolwiek."""
+        if self.serial is not None:
+            try:
+                if self.serial.is_open:
+                    self.serial.close()
+            except Exception:
+                pass
+        self.serial = None
         self.connected = False
 
+    def disconnect(self):
+        """Bezpieczne rozłączenie: najpierw wyłącz wysokie napięcie."""
+        with self._lock:
+            if self.serial is not None and self.connected:
+                try:
+                    if self.serial.is_open:
+                        self.stop_test()
+                except Exception:
+                    pass
+            self._force_close()
+
+    @property
+    def is_open(self) -> bool:
+        s = self.serial
+        return bool(s is not None and s.is_open and self.connected)
+
+    # ------------------------------------------------------------------ #
+    # NISKI POZIOM                                                        #
+    # ------------------------------------------------------------------ #
     def send_command(self, command: str):
-        if not self.connected or not self.serial:
-            raise Exception("Urządzenie nie jest połączone!")
-        if not command.endswith('\n'):
-            command += '\n'
-        self.serial.write(command.encode('ascii'))
-        time.sleep(0.1)
+        with self._lock:
+            if not self.is_open:
+                raise IOError("Urządzenie Hi-Pot nie jest połączone!")
+            if not command.endswith("\n"):
+                command += "\n"
+            self.serial.write(command.encode("ascii"))
+            time.sleep(self.CMD_DELAY)
 
-    def read_response(self, timeout: float = 2.0) -> Optional[str]:
-        if not self.connected or not self.serial:
-            return None
-
-        start_time = time.time()
-        response = ""
-
-        while (time.time() - start_time) < timeout:
-            if self.serial.in_waiting > 0:
-                chunk = self.serial.read(self.serial.in_waiting).decode('ascii', errors='ignore')
-                response += chunk
-                if '\n' in response or '\r' in response:
-                    break
-            time.sleep(0.05)
-
-        return response.strip() if response else None
+    def read_response(self, timeout: Optional[float] = None) -> Optional[str]:
+        timeout = self.READ_TIMEOUT if timeout is None else timeout
+        with self._lock:
+            if not self.is_open:
+                return None
+            start = time.time()
+            response = ""
+            while (time.time() - start) < timeout:
+                try:
+                    waiting = self.serial.in_waiting
+                except Exception as e:
+                    print(f"[HIPOT] Port przerwany przy odczycie: {e}")
+                    return None
+                if waiting > 0:
+                    chunk = self.serial.read(waiting).decode("ascii", errors="ignore")
+                    response += chunk
+                    if "\n" in response or "\r" in response:
+                        break
+                time.sleep(0.02)
+            return response.strip() if response.strip() else None
 
     def query(self, command: str) -> Optional[str]:
-        self.send_command(command)
-        return self.read_response()
+        """Jedna transakcja zapytanie→odpowiedź, atomowa względem innych wątków."""
+        with self._lock:
+            try:
+                self.serial.reset_input_buffer()
+            except Exception:
+                pass
+            try:
+                self.send_command(command)
+            except Exception as e:
+                self.comm_errors += 1
+                print(f"[HIPOT] Błąd wysyłki '{command}': {e}")
+                return None
+            resp = self.read_response()
+            if resp is None:
+                self.comm_errors += 1
+            else:
+                self.comm_errors = 0
+            return resp
 
-    def _parse(self, response: Optional[str]) -> list:
+    @staticmethod
+    def _parse(response: Optional[str]) -> list:
         """Parsuje odpowiedź Chromy — separator może być ; lub ,"""
         if not response:
             return []
-        sep = ';' if ';' in response else ','
+        sep = ";" if ";" in response else ","
         return [p.strip() for p in response.split(sep)]
 
-    def configure_test(self, step: int, mode: str, params: Dict):
-        if mode == 'AC':
-            self.send_command(f"SAFEty:STEP{step}:AC:LEVel {params.get('voltage', 1000)}")
-            self.send_command(f"SAFEty:STEP{step}:AC:LIMit:HIGH {params.get('current_limit_high', 0.005)}")
-            self.send_command(f"SAFEty:STEP{step}:AC:LIMit:LOW {params.get('current_limit_low', 0.0)}")
-            self.send_command(f"SAFEty:STEP{step}:AC:TIME:TEST {params.get('duration', 60)}")
-            self.send_command(f"SAFEty:STEP{step}:AC:TIME:RAMP {params.get('ramp_time', 0)}")
-            self.send_command(f"SAFEty:STEP{step}:AC:TIME:FALL {params.get('fall_time', 0)}")
-        elif mode == 'DC':
-            self.send_command(f"SAFEty:STEP{step}:DC:LEVel {params.get('voltage', 1000)}")
-            self.send_command(f"SAFEty:STEP{step}:DC:LIMit:HIGH {params.get('current_limit_high', 0.005)}")
-            self.send_command(f"SAFEty:STEP{step}:DC:LIMit:LOW {params.get('current_limit_low', 0.0)}")
-            self.send_command(f"SAFEty:STEP{step}:DC:TIME:TEST {params.get('duration', 60)}")
-            self.send_command(f"SAFEty:STEP{step}:DC:TIME:RAMP {params.get('ramp_time', 0)}")
-            self.send_command(f"SAFEty:STEP{step}:DC:TIME:FALL {params.get('fall_time', 0)}")
-        elif mode == 'IR':
-            self.send_command(f"SAFEty:STEP{step}:IR:LEVel {params.get('voltage', 500)}")
-            self.send_command(f"SAFEty:STEP{step}:IR:LIMit {params.get('resistance_limit', 300000)}")
-            self.send_command(f"SAFEty:STEP{step}:IR:TIME:TEST {params.get('duration', 3)}")
-
-    def start_test(self) -> bool:
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
         try:
-            # Kluczowe: KLOC OFF i STARt bez opóźnienia między nimi
-            self.send_command("SYST:KLOC OFF")
-            self.send_command("SAFEty:STARt")
-            time.sleep(0.3)
+            f = float(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+        if f != f or abs(f) >= OVERFLOW:      # NaN albo overflow Chromy
+            return default
+        return f
+
+    # ------------------------------------------------------------------ #
+    # KONFIGURACJA KROKU                                                  #
+    # ------------------------------------------------------------------ #
+    def configure_test(self, step: int, mode: str, params: Dict) -> bool:
+        """Zwraca True gdy wszystkie komendy poszły bez wyjątku."""
+        mode = (mode or "AC").upper()
+        try:
+            if mode in ("AC", "DC"):
+                self.send_command(f"SAFEty:STEP{step}:{mode}:LEVel {params.get('voltage', 1000)}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:LIMit:HIGH {params.get('current_limit_high', 0.005)}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:LIMit:LOW {params.get('current_limit_low', 0.0)}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:TEST {params.get('duration', 60)}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:RAMP {params.get('ramp_time', 0)}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:FALL {params.get('fall_time', 0)}")
+            elif mode == "IR":
+                self.send_command(f"SAFEty:STEP{step}:IR:LEVel {params.get('voltage', 500)}")
+                self.send_command(f"SAFEty:STEP{step}:IR:LIMit {params.get('resistance_limit', 300000)}")
+                self.send_command(f"SAFEty:STEP{step}:IR:TIME:TEST {params.get('duration', 3)}")
+            else:
+                raise ValueError(f"Nieobsługiwany tryb testu: {mode}")
+
             err = self.query("SYST:ERR?")
-            print(f"[START] SYST:ERR? = '{err}'")
-            return "-203" not in str(err)
+            if err and not self._error_is_ok(err):
+                print(f"[HIPOT] Konfiguracja zgłosiła błąd: '{err}'")
+                return False
+            return True
         except Exception as e:
-            print(f"Błąd rozpoczęcia testu: {e}")
+            print(f"[HIPOT] Błąd konfiguracji kroku: {e}")
             return False
+
+    @staticmethod
+    def _error_is_ok(err: str) -> bool:
+        """SCPI: '0,"No error"' oznacza brak błędu."""
+        first = str(err).split(",")[0].strip()
+        try:
+            return int(float(first)) == 0
+        except (TypeError, ValueError):
+            return True     # nieznany format — nie blokuj pracy
+
+    # ------------------------------------------------------------------ #
+    # STEROWANIE TESTEM                                                   #
+    # ------------------------------------------------------------------ #
+    def start_test(self) -> Tuple[bool, str]:
+        """
+        Zwraca (ok, komunikat). Wcześniej metoda zwracała samo True/False,
+        a wynik i tak był ignorowany przez wywołującego — test "startował"
+        nawet gdy Chroma odrzuciła komendę i GUI wisiało do timeoutu.
+        """
+        try:
+            with self._lock:
+                self.send_command("SYST:KLOC OFF")
+                self.send_command("SAFEty:STARt")
+                time.sleep(0.3)
+                err = self.query("SYST:ERR?")
+            print(f"[HIPOT] START → SYST:ERR? = '{err}'")
+            if err and "-203" in str(err):
+                return False, "Urządzenie zablokowane (błąd -203) — sprawdź klapę/keylock."
+            if err and not self._error_is_ok(err):
+                return False, f"Urządzenie odrzuciło START: {err}"
+            return True, ""
+        except Exception as e:
+            print(f"[HIPOT] Błąd rozpoczęcia testu: {e}")
+            return False, str(e)
 
     def stop_test(self) -> bool:
         try:
-            self.send_command("SAFEty:STOP")
+            with self._lock:
+                if not self.is_open:
+                    return False
+                self.send_command("SAFEty:STOP")
             return True
         except Exception as e:
-            print(f"Błąd zatrzymania testu: {e}")
+            print(f"[HIPOT] Błąd zatrzymania testu: {e}")
             return False
 
     def get_status(self) -> str:
+        """
+        Zwraca znormalizowany stan. Przy braku odpowiedzi zwraca 'TESTING',
+        żeby nie przerywać testu na pojedynczym zgubionym pakiecie —
+        wykrywanie zerwanej komunikacji robi licznik comm_errors.
+        """
         try:
             response = self.query("SAFEty:STATus?")
-            if response:
-                s = response.strip().upper()
-                # Chroma może zwrócić pusty/śmieciowy wynik zaraz po starcie
-                # Akceptujemy tylko znane stany
-                if s in ("PASS", "FAIL", "STOP", "STOPPED", "TESTING", "RUNNING", "READY", "WAIT"):
-                    return s
-                # Wszystko inne traktujemy jako "urządzenie jeszcze nie odpowiada"
-                print(f"[STATUS] nieznana odpowiedź: '{response}' — traktuję jako TESTING")
+            if not response:
                 return "TESTING"
-            return "TESTING"  # brak odpowiedzi = test w toku (nie STOPPED)
+            s = response.strip().upper()
+            for token in _FINISHED_TOKENS + ("TESTING", "RUNNING", "WAIT"):
+                if token in s:
+                    return token
+            print(f"[HIPOT] Nieznany status: '{response}' — traktuję jako TESTING")
+            return "TESTING"
         except Exception as e:
-            print(f"Błąd pobierania statusu: {e}")
-            return "TESTING"  # błąd = nie przerywaj pętli
+            print(f"[HIPOT] Błąd pobierania statusu: {e}")
+            return "TESTING"
 
+    @staticmethod
+    def status_is_finished(status: str) -> bool:
+        """
+        Poprzednio kod porównywał status == 'STOPPED'. Chroma zwraca 'STOP',
+        więc warunek nigdy się nie spełniał i każdy test kończył się dopiero
+        awaryjnym limitem czasu (total_time + 5 s).
+        """
+        return any(tok in (status or "").upper() for tok in _FINISHED_TOKENS)
+
+    # ------------------------------------------------------------------ #
+    # POMIARY I WYNIK                                                     #
+    # ------------------------------------------------------------------ #
     def read_measurements(self) -> Optional[Dict]:
         try:
             response = self.query("SAFEty:FETCh? STEP,MODE,OMET,MMET,RMET")
-            if response:
-                parts = self._parse(response)
-                if len(parts) >= 5:
-                    raw_v = float(parts[2])
-                    raw_i = float(parts[3])
-                    raw_r = float(parts[4])
-                    return {
-                        'step':            parts[0],
-                        'mode':            parts[1],
-                        'output_voltage':  raw_v if raw_v < OVERFLOW else 0.0,
-                        'measure_current': raw_i if raw_i < OVERFLOW else 0.0,
-                        'real_current':    raw_r if raw_r < OVERFLOW else 0.0,
-                    }
+            parts = self._parse(response)
+            if len(parts) >= 5:
+                return {
+                    "step":            parts[0],
+                    "mode":            parts[1],
+                    "output_voltage":  self._to_float(parts[2]),   # [V]
+                    "measure_current": self._to_float(parts[3]),   # [A]
+                    "real_current":    self._to_float(parts[4]),   # [A]
+                }
         except Exception as e:
-            print(f"Błąd odczytu pomiarów: {e}")
+            print(f"[HIPOT] Błąd odczytu pomiarów: {e}")
         return None
 
     def get_test_result(self) -> Tuple[str, Dict]:
+        """
+        Zwraca ('PASS'|'FAIL'|'UNKNOWN', dane).
+        UNKNOWN = urządzenie nie odpowiedziało. Wcześniej taki przypadek
+        był raportowany i logowany jako FAIL, czyli usterka łącza RS232
+        wyglądała jak wadliwy zasilacz.
+        Prądy zwracane są w mA (jedno, jednoznaczne miejsce przeliczenia).
+        """
         try:
             judgment_code = self.query("SAFEty:RESult:LAST:JUDG?")
-            output_v = self.query("SAFEty:RESult:LAST:OMET?")
-            measured_i = self.query("SAFEty:RESult:LAST:MMET?")
-            real_i = self.query("SAFEty:RESult:LAST:RMET?")
+            output_v      = self.query("SAFEty:RESult:LAST:OMET?")
+            measured_i    = self.query("SAFEty:RESult:LAST:MMET?")
+            real_i        = self.query("SAFEty:RESult:LAST:RMET?")
 
-            print(f"[WYNIK] judgment_code = '{judgment_code}'")
-            print(f"[WYNIK] output_v      = '{output_v}'")
-            print(f"[WYNIK] measured_i    = '{measured_i}'")
-            print(f"[WYNIK] real_i        = '{real_i}'")
+            print(f"[HIPOT][WYNIK] judg='{judgment_code}' omet='{output_v}' "
+                  f"mmet='{measured_i}' rmet='{real_i}'")
 
-            # Chroma zwraca kod jako liczbę: 116 = PASS, reszta = FAIL
-            jc = judgment_code.strip() if judgment_code else ""
-            result = "PASS" if jc == "116" else "FAIL"
+            if judgment_code is None:
+                return "UNKNOWN", {"judgment_code": "", "error_code": "",
+                                   "comm_ok": False,
+                                   "output_voltage": 0.0,
+                                   "measured_current_ma": 0.0,
+                                   "real_current_ma": 0.0}
 
-            # error_code: przy PASS zostawiamy puste, przy FAIL dajemy kod
-            error_code = "" if result == "PASS" else jc
+            jc_raw = judgment_code.strip()
+            try:
+                jc_num = int(float(self._parse(jc_raw)[0]))
+                jc = str(jc_num)
+            except (ValueError, IndexError):
+                jc, jc_num = jc_raw, None
 
-            raw_v = float(output_v) if output_v else 0.0
-            raw_mi = float(measured_i) if measured_i else 0.0
-            raw_ri = float(real_i) if real_i else 0.0
+            if jc_num is None:
+                result = "UNKNOWN"
+            elif jc_num == PASS_JUDGMENT_CODE:
+                result = "PASS"
+            else:
+                result = "FAIL"
 
             data = {
-                'judgment_code': jc,
-                'error_code': error_code,  # <-- NOWE
-                'output_voltage': raw_v if raw_v < OVERFLOW else 0.0,
-                'measured_current': (raw_mi * 1000) if raw_mi < OVERFLOW else 0.0,
-                'real_current': (raw_ri * 1000) if raw_ri < OVERFLOW else 0.0,
+                "judgment_code": jc,
+                "error_code": "" if result == "PASS" else jc,
+                "comm_ok": True,
+                "output_voltage":      self._to_float(output_v),          # [V]
+                "measured_current_ma": self._to_float(measured_i) * 1000, # [A]→[mA]
+                "real_current_ma":     self._to_float(real_i) * 1000,     # [A]→[mA]
             }
-            return (result, data)
+            return result, data
 
         except Exception as e:
-            print(f"Błąd pobierania wyniku: {e}")
-            return ("UNKNOWN", {})
+            print(f"[HIPOT] Błąd pobierania wyniku: {e}")
+            return "UNKNOWN", {"judgment_code": "", "error_code": "",
+                               "comm_ok": False,
+                               "output_voltage": 0.0,
+                               "measured_current_ma": 0.0,
+                               "real_current_ma": 0.0}
 
-    def clear_steps(self):
+    def clear_steps(self) -> bool:
         try:
             num_steps = self.query("SAFEty:SNUMber?")
-            if num_steps:
-                parts = self._parse(num_steps)
-                n = int(float(parts[0])) if parts else 0
-                for i in range(n, 0, -1):
-                    self.send_command(f"SAFEty:STEP{i}:DELete")
-                    time.sleep(0.1)
+            parts = self._parse(num_steps)
+            if not parts:
+                return False
+            n = int(float(parts[0]))
+            for i in range(n, 0, -1):
+                self.send_command(f"SAFEty:STEP{i}:DELete")
+            return True
         except Exception as e:
-            print(f"Błąd czyszczenia kroków: {e}")
+            print(f"[HIPOT] Błąd czyszczenia kroków: {e}")
+            return False
 
-    # ─────────────────────────────────────────
-    # DEBUG
-    # ─────────────────────────────────────────
-
+    # ------------------------------------------------------------------ #
+    # DEBUG                                                               #
+    # ------------------------------------------------------------------ #
     def debug_test(self, port: str = "COM6"):
         print("=" * 55)
         print("DEBUG HI-POT")
@@ -229,71 +383,48 @@ class ChromaHiPotDevice:
 
         print(f"\n[1] Łączenie z {port}...")
         self.port = port
-        ok = self.connect()
-        print(f"    connect() = {ok}")
-        if not ok:
+        if not self.connect():
             print("    STOP — brak połączenia")
             return
 
-        print("\n[2] *IDN?")
-        print(f"    '{self.query('*IDN?')}'")
-
-        print("\n[3] SYST:ERR?")
-        print(f"    '{self.query('SYST:ERR?')}'")
-
-        print("\n[4] SAFEty:SNUMber? (przed clear)")
-        print(f"    '{self.query('SAFEty:SNUMber?')}'")
+        print(f"\n[2] *IDN?           '{self.query('*IDN?')}'")
+        print(f"[3] SYST:ERR?       '{self.query('SYST:ERR?')}'")
+        print(f"[4] SAFEty:SNUMber? '{self.query('SAFEty:SNUMber?')}'")
 
         print("\n[5] clear_steps()")
         self.clear_steps()
-        print(f"    SAFEty:SNUMber? po czyszczeniu: '{self.query('SAFEty:SNUMber?')}'")
+        print(f"    SNUMber? po czyszczeniu: '{self.query('SAFEty:SNUMber?')}'")
 
-        print("\n[5b] Konfiguracja...")
-        cmds = [
-            "SAFEty:STEP1:AC:LEVel 3000",
-            "SAFEty:STEP1:AC:LIMit:HIGH 0.0025",
-            "SAFEty:STEP1:AC:LIMit:LOW 0.0",
-            "SAFEty:STEP1:AC:TIME:TEST 1.0",
-            "SAFEty:STEP1:AC:TIME:RAMP 0.5",
-            "SAFEty:STEP1:AC:TIME:FALL 0.5",
-        ]
-        for cmd in cmds:
-            self.send_command(cmd)
-            time.sleep(0.2)
-            err = self.query("SYST:ERR?")
-            print(f"    {cmd}")
-            print(f"    ERR: '{err}'")
-
-        print(f"\n    SAFEty:SNUMber? po konfiguracji: '{self.query('SAFEty:SNUMber?')}'")
+        print("\n[6] Konfiguracja...")
+        ok = self.configure_test(1, "AC", {
+            "voltage": 3000, "current_limit_high": 0.0025,
+            "current_limit_low": 0.0, "duration": 1.0,
+            "ramp_time": 0.5, "fall_time": 0.5})
+        print(f"    configure_test() = {ok}")
 
         print("\n[7] start_test()")
-        ok = self.start_test()
-        print(f"    start_test() = {ok}")
-        print(f"    SAFEty:STATus? = '{self.query('SAFEty:STATus?')}'")
-
+        ok, msg = self.start_test()
+        print(f"    start_test() = {ok} {msg}")
         if not ok:
-            print("\n    *** START zablokowany ***")
             self.disconnect()
             return
 
-        print("\n[8] Monitorowanie przez 15s...")
+        print("\n[8] Monitorowanie przez 15 s...")
+        result = "UNKNOWN"
         for i in range(30):
             time.sleep(0.5)
-            stat = self.query("SAFEty:STATus?")
-            meas = self.query("SAFEty:FETCh? STEP,MODE,OMET,MMET,RMET")
-            print(f"    t={i*0.5:.1f}s  stat='{stat}'  meas='{meas}'")
-            if stat and "STOP" in stat.upper():
-                print("    >>> STOPPED")
+            stat = self.get_status()
+            meas = self.read_measurements()
+            print(f"    t={i * 0.5:.1f}s  stat='{stat}'  meas={meas}")
+            if self.status_is_finished(stat):
+                print("    >>> ZAKOŃCZONY")
                 break
 
         print("\n[9] Wynik...")
         result, data = self.get_test_result()
-        print(f"    wynik: {result}")
-        print(f"    dane:  {data}")
+        print(f"    wynik: {result}\n    dane:  {data}")
 
-        print("\n[10] Rozłączanie...")
         self.disconnect()
-        print("     rozłączono")
         print("\n" + "=" * 55)
         print(f"KOŃCOWY WYNIK: {result}")
         print("=" * 55)

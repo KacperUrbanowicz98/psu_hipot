@@ -3,7 +3,6 @@
 import os
 from datetime import datetime
 
-
 _DEFAULT_LOG_DIR = "logs"
 
 ERROR_CODES = {
@@ -29,6 +28,21 @@ def _get_error_description(error_code: str) -> str:
     return ERROR_CODES.get(str(error_code).strip(), f"Error code {error_code}")
 
 
+def _unique_path(log_dir: str, serial: str, now: datetime) -> str:
+    """
+    Nazwa pliku SN_YYYYMMDDHHmmss.txt.
+    Dwa testy tego samego SN w tej samej sekundzie nadpisywały się nawzajem
+    — dokładany jest sufiks _2, _3, ... żeby żaden wynik nie zniknął.
+    """
+    base = f"{serial}_{now.strftime('%Y%m%d%H%M%S')}"
+    path = os.path.join(log_dir, base + ".txt")
+    counter = 2
+    while os.path.exists(path):
+        path = os.path.join(log_dir, f"{base}_{counter}.txt")
+        counter += 1
+    return path
+
+
 def save_report(operator: str, program: str, serial: str,
                 mode: str, vtm: float, im: float,
                 low: float, high: float,
@@ -36,12 +50,15 @@ def save_report(operator: str, program: str, serial: str,
                 log_dir: str = _DEFAULT_LOG_DIR) -> str:
     """
     Zapisuje raport TXT w formacie Chroma 19052.
-    Nazwa pliku: SN_YYYYMMDDHHmmss.txt  np. 21BDA26773_20260408143647.txt
     Zwraca ścieżkę do pliku.
 
-    Parametry:
-        log_dir - ścieżka folderu zapisu (domyślnie lokalny 'logs').
-                  Przekaż config.LOG_DIR aby używać ścieżki sieciowej IFS.
+    UWAGA: w razie niepowodzenia metoda PODNOSI wyjątek. Wcześniej błąd
+    zapisu (np. zerwany dysk sieciowy IFS) trafiał tylko na konsolę —
+    operator widział PASS, a raport nigdy nie powstawał.
+
+    Jednostki:
+        vtm — [kV]
+        im, low, high — [mA]
     """
     os.makedirs(log_dir, exist_ok=True)
 
@@ -50,7 +67,6 @@ def save_report(operator: str, program: str, serial: str,
     error_desc   = _get_error_description(error_code)
     result_cap   = "Pass" if str(result).upper() == "PASS" else "Fail"
 
-    # Format zgodny 1:1 z oryginalnym plikiem Chroma
     lines = [
         "Chroma 19052 Test report",
         "",
@@ -72,12 +88,24 @@ def save_report(operator: str, program: str, serial: str,
         f"Error Description: {error_desc}",
     ]
 
-    # Nazwa pliku: SN_YYYYMMDDHHmmss.txt
-    filename = f"{serial}_{now.strftime('%Y%m%d%H%M%S')}.txt"
-    filepath = os.path.join(log_dir, filename)
+    filepath = _unique_path(log_dir, serial, now)
 
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write("\r\n".join(lines))
+    # Zapis przez plik tymczasowy: IFS nigdy nie zobaczy pliku uciętego
+    # w połowie, jeśli sieć padnie w trakcie zapisu.
+    tmp = filepath + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\r\n".join(lines))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, filepath)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise
 
     print(f"[LOG] Zapisano: {filepath}")
     return filepath

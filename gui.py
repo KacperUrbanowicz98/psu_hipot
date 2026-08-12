@@ -1,11 +1,19 @@
 # gui.py
 """Interfejs graficzny aplikacji"""
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox, ttk
+
+from admin_panel import AdminPanel
 from config import Config
 from models import PowerSupplyModels
-from admin_panel import AdminPanel
 from stats_manager import StatsManager
+
+# Hasło dostępu do panelu konfiguracji.
+# UWAGA: wpisane w kodzie źródłowym daje ochronę wyłącznie "przed pomyłką",
+# nie przed osobą, która ma dostęp do plików aplikacji. Docelowo powinno
+# trafić do config.json jako skrót (hash) albo zostać zastąpione listą
+# HRID-ów uprawnionych administratorów.
+ADMIN_PASSWORD = "reconext2026"
 
 
 class HiPotTesterApp:
@@ -14,22 +22,56 @@ class HiPotTesterApp:
         self.root = root
         self.config = Config()
         self.current_user = None
-        self.stats = StatsManager(log_dir=self.config.LOG_DIR)
+        self.test_screen = None
+
+        # POPRAWKA: konstruktor StatsManager tworzył katalogi na dysku
+        # sieciowym. Niedostępny udział IFS wywalał całą aplikację przy
+        # starcie — okno w ogóle się nie pokazywało.
+        self.stats = self._make_stats()
+
         self._setup_window()
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self._show_login_screen()
 
+    def _make_stats(self):
+        try:
+            return StatsManager(log_dir=self.config.LOG_DIR)
+        except Exception as e:
+            print(f"[STATS] Nie udało się zainicjować statystyk: {e}")
+            return None
+
     def _setup_window(self):
         self.root.title(self.config.WINDOW_TITLE)
-        self.root.state("zoomed")
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            self.root.geometry(f"{self.config.WINDOW_WIDTH}x{self.config.WINDOW_HEIGHT}")
         self.root.configure(bg=self.config.COLOR_BG)
 
+    # ------------------------------------------------------------------ #
+    # ZAMYKANIE                                                            #
+    # ------------------------------------------------------------------ #
     def _on_closing(self):
-        self.stats.flush()
-        self.root.destroy()
+        # Gdy aktywny jest ekran testu, to on decyduje o zamknięciu
+        # (musi najpierw wyłączyć wysokie napięcie).
+        if self.test_screen is not None and not getattr(self.test_screen, "_closed", True):
+            self.test_screen._on_window_close()
+            return
+        self.close_application()
+
+    def close_application(self):
+        if self.stats:
+            try:
+                self.stats.flush()
+            except Exception:
+                pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
-    #  EKRAN LOGOWANIA                                                     #
+    # EKRAN LOGOWANIA                                                      #
     # ------------------------------------------------------------------ #
     def _show_login_screen(self):
         self.login_frame = tk.Frame(self.root, bg=self.config.COLOR_BG)
@@ -63,10 +105,8 @@ class HiPotTesterApp:
         self.hrid_entry.focus()
         self.hrid_entry.bind("<Return>", lambda e: self._attempt_login())
 
-        self.error_label = tk.Label(panel, text="",
-                                    bg=self.config.COLOR_WHITE,
-                                    fg=self.config.COLOR_ERROR,
-                                    font=("Arial", 10))
+        self.error_label = tk.Label(panel, text="", bg=self.config.COLOR_WHITE,
+                                    fg=self.config.COLOR_ERROR, font=("Arial", 10))
         self.error_label.pack()
 
         login_btn = tk.Button(panel, text="ZALOGUJ",
@@ -74,8 +114,7 @@ class HiPotTesterApp:
                               fg=self.config.COLOR_WHITE,
                               font=("Arial", 14, "bold"),
                               width=15, height=2, relief=tk.FLAT,
-                              cursor="hand2",
-                              command=self._attempt_login)
+                              cursor="hand2", command=self._attempt_login)
         login_btn.pack(pady=(10, 30), padx=50)
         login_btn.bind("<Enter>", lambda e: login_btn.config(bg="#66BB6A"))
         login_btn.bind("<Leave>", lambda e: login_btn.config(bg=self.config.COLOR_ACCENT))
@@ -85,7 +124,10 @@ class HiPotTesterApp:
         if not hrid:
             self.error_label.config(text="Pole HRID nie może być puste!")
             return
-        if hrid in self.config.AUTHORIZED_USERS:
+        # Porównanie bez rozróżniania wielkości liter — skaner i klawiatura
+        # potrafią dać różny wynik dla HRID-ów alfanumerycznych (np. "TEST").
+        allowed = {str(u).strip().upper() for u in self.config.AUTHORIZED_USERS}
+        if hrid.upper() in allowed:
             self.current_user = hrid
             self._login_success()
         else:
@@ -98,9 +140,12 @@ class HiPotTesterApp:
         self._create_main_app()
 
     # ------------------------------------------------------------------ #
-    #  GŁÓWNA APLIKACJA                                                    #
+    # GŁÓWNA APLIKACJA                                                     #
     # ------------------------------------------------------------------ #
     def _create_main_app(self):
+        self._build_scan_view()
+
+    def _build_scan_view(self):
         self._create_header()
 
         main_frame = tk.Frame(self.root, bg=self.config.COLOR_BG)
@@ -113,11 +158,15 @@ class HiPotTesterApp:
         self._d_press_timer = None
         self.root.bind("<Control-Alt-d>", self._on_config_shortcut)
         self.root.bind("<Control-Alt-D>", self._on_config_shortcut)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def _on_config_shortcut(self, event=None):
         self._d_press_count += 1
         if self._d_press_timer:
-            self.root.after_cancel(self._d_press_timer)
+            try:
+                self.root.after_cancel(self._d_press_timer)
+            except Exception:
+                pass
         self._d_press_timer = self.root.after(1000, self._reset_d_counter)
         if self._d_press_count >= 3:
             self._d_press_count = 0
@@ -125,6 +174,7 @@ class HiPotTesterApp:
 
     def _reset_d_counter(self):
         self._d_press_count = 0
+        self._d_press_timer = None
 
     def _show_password_dialog(self):
         pw_win = tk.Toplevel(self.root)
@@ -158,7 +208,7 @@ class HiPotTesterApp:
         err.pack()
 
         def check_password():
-            if pw_entry.get() == "reconext2026":
+            if pw_entry.get() == ADMIN_PASSWORD:
                 pw_win.destroy()
                 self._show_config_window()
             else:
@@ -182,9 +232,32 @@ class HiPotTesterApp:
     def _show_config_window(self):
         panel = AdminPanel(self.root, self.config)
         panel.show()
+        # POPRAWKA: po zamknięciu panelu trzeba odświeżyć listę modeli
+        # i przełączyć statystyki na nową ścieżkę logów. Bez tego nowy profil
+        # był niewidoczny, a zmiana ścieżki działała dopiero po restarcie.
+        try:
+            self.root.wait_window(panel.window)
+        except Exception:
+            pass
+        self._after_admin_changes()
+
+    def _after_admin_changes(self):
+        self.config.LOG_DIR = self.config.resolve_log_dir()
+        if self.stats is None:
+            self.stats = self._make_stats()
+        else:
+            try:
+                self.stats.set_log_dir(self.config.LOG_DIR)
+            except Exception as e:
+                print(f"[STATS] Nie udało się przełączyć ścieżki: {e}")
+        try:
+            if hasattr(self, "model_combo") and self.model_combo.winfo_exists():
+                self.model_combo["values"] = PowerSupplyModels.get_all_models()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
-    #  PANEL SKANOWANIA                                                    #
+    # PANEL SKANOWANIA                                                     #
     # ------------------------------------------------------------------ #
     def _create_scan_panel(self, parent):
         center = tk.Frame(parent, bg=self.config.COLOR_BG)
@@ -204,17 +277,15 @@ class HiPotTesterApp:
 
         self.selected_model = tk.StringVar()
         self.model_combo = ttk.Combobox(
-            scan_panel,
-            textvariable=self.selected_model,
+            scan_panel, textvariable=self.selected_model,
             values=PowerSupplyModels.get_all_models(),
             font=("Arial", 13), width=28, state="readonly")
         self.model_combo.pack(pady=(0, 15), padx=50)
         self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
 
         self.sn_length_label = tk.Label(
-            scan_panel, text="",
-            bg=self.config.COLOR_WHITE, fg="#666666",
-            font=("Arial", 10, "italic"))
+            scan_panel, text="", bg=self.config.COLOR_WHITE,
+            fg="#666666", font=("Arial", 10, "italic"))
         self.sn_length_label.pack(pady=(0, 5))
 
         tk.Label(scan_panel, text="Zeskanuj lub wprowadź numer seryjny:",
@@ -223,23 +294,22 @@ class HiPotTesterApp:
 
         self.serial_entry = tk.Entry(
             scan_panel, font=("Arial", 16, "bold"), width=30,
-            justify="center", relief=tk.SOLID, borderwidth=2,
-            state="disabled")
+            justify="center", relief=tk.SOLID, borderwidth=2, state="disabled")
         self.serial_entry.pack(pady=15, padx=50)
         self.serial_entry.bind("<Return>", lambda e: self._process_serial())
 
         self.scan_status_label = tk.Label(
-            scan_panel, text="",
-            bg=self.config.COLOR_WHITE, font=("Arial", 11))
+            scan_panel, text="", bg=self.config.COLOR_WHITE, font=("Arial", 11))
         self.scan_status_label.pack(pady=5)
 
         self.confirm_button = tk.Button(
-            scan_panel, text="POTWIERDŹ",
-            bg="#AAAAAA", fg=self.config.COLOR_WHITE,
-            font=("Arial", 14, "bold"), width=20, height=2,
-            relief=tk.FLAT, cursor="hand2",
+            scan_panel, text="POTWIERDŹ", bg="#AAAAAA",
+            fg=self.config.COLOR_WHITE, font=("Arial", 14, "bold"),
+            width=20, height=2, relief=tk.FLAT, cursor="hand2",
             command=self._process_serial, state="disabled")
         self.confirm_button.pack(pady=(10, 30), padx=50)
+
+        self._transition_pending = False
 
     def _on_model_selected(self, event=None):
         model_key = self.selected_model.get()
@@ -247,7 +317,6 @@ class HiPotTesterApp:
         if not model_info:
             return
 
-        # Zablokuj pole SN dopóki operator nie potwierdzi wyboru profilu
         self.serial_entry.config(state="disabled")
         self.confirm_button.config(state="disabled", bg="#AAAAAA")
         self.sn_length_label.config(text="")
@@ -267,60 +336,50 @@ class HiPotTesterApp:
         dialog.update_idletasks()
         x = self.root.winfo_screenwidth() // 2 - w // 2
         y = self.root.winfo_screenheight() // 2 - h // 2
-        dialog.geometry(f"{w}x{h}+{x}+{y}")
+        dialog.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
 
-        # Pasek kolorowy na górze
         tk.Frame(dialog, bg=self.config.COLOR_PRIMARY, height=8).pack(fill=tk.X)
 
-        tk.Label(
-            dialog,
-            text="Czy wybrano prawidłowy profil?",
-            bg=self.config.COLOR_WHITE,
-            fg=self.config.COLOR_PRIMARY,
-            font=("Arial", 16, "bold")
-        ).pack(pady=(28, 8))
+        tk.Label(dialog, text="Czy wybrano prawidłowy profil?",
+                 bg=self.config.COLOR_WHITE, fg=self.config.COLOR_PRIMARY,
+                 font=("Arial", 16, "bold")).pack(pady=(28, 8))
 
-        # Nazwa profilu — duży wyróżniony napis
-        tk.Label(
-            dialog,
-            text=model_key,
-            bg=self.config.COLOR_WHITE,
-            fg=self.config.COLOR_ACCENT,
-            font=("Arial", 24, "bold")
-        ).pack(pady=(0, 6))
+        tk.Label(dialog, text=model_key, bg=self.config.COLOR_WHITE,
+                 fg=self.config.COLOR_ACCENT,
+                 font=("Arial", 24, "bold")).pack(pady=(0, 6))
 
-        # Opis profilu jeśli istnieje i różni się od klucza
         desc = model_info.get("description", "")
         if desc and desc != model_key:
-            tk.Label(
-                dialog,
-                text=desc,
-                bg=self.config.COLOR_WHITE,
-                fg="#666666",
-                font=("Arial", 10)
-            ).pack(pady=(0, 8))
+            tk.Label(dialog, text=desc, bg=self.config.COLOR_WHITE,
+                     fg="#666666", font=("Arial", 10)).pack(pady=(0, 8))
 
-        tk.Frame(dialog, bg="#dddddd", height=1).pack(fill=tk.X, padx=30, pady=(0, 20))
+        # Parametry testu na potwierdzeniu — operator widzi, czy profil
+        # odpowiada testowanej sztuce, zanim poda 3–4 kV.
+        p = model_info.get("test_params", {})
+        tk.Label(dialog,
+                 text=f"{p.get('mode', '?')}  {p.get('voltage', '?')} V   "
+                      f"limit {p.get('current_limit_low', '?')}–"
+                      f"{p.get('current_limit_high', '?')} mA",
+                 bg=self.config.COLOR_WHITE, fg="#333333",
+                 font=("Arial", 11, "bold")).pack(pady=(0, 8))
 
-        # Przyciski TAK / NIE
+        tk.Frame(dialog, bg="#dddddd", height=1).pack(fill=tk.X, padx=30, pady=(0, 16))
+
         btn_frame = tk.Frame(dialog, bg=self.config.COLOR_WHITE)
         btn_frame.pack()
 
         def on_yes():
             dialog.destroy()
             length = model_info.get("serial_length", "?")
-            if isinstance(length, list):
-                length_text = " lub ".join(str(x) for x in length)
-            else:
-                length_text = str(length)
-            self.sn_length_label.config(
-                text=f"Wymagana długość SN: {length_text} znaków")
+            length_text = (" lub ".join(str(x) for x in length)
+                           if isinstance(length, list) else str(length))
+            self.sn_length_label.config(text=f"Wymagana długość SN: {length_text} znaków")
             self.serial_entry.config(state="normal")
             self.confirm_button.config(state="normal", bg=self.config.COLOR_ACCENT)
-            self.confirm_button.bind("<Enter>",
-                lambda e: self.confirm_button.config(bg="#66BB6A"))
-            self.confirm_button.bind("<Leave>",
-                lambda e: self.confirm_button.config(bg=self.config.COLOR_ACCENT))
+            self.confirm_button.bind(
+                "<Enter>", lambda e: self.confirm_button.config(bg="#66BB6A"))
+            self.confirm_button.bind(
+                "<Leave>", lambda e: self.confirm_button.config(bg=self.config.COLOR_ACCENT))
             self.serial_entry.delete(0, tk.END)
             self.scan_status_label.config(text="")
             self.serial_entry.focus()
@@ -334,90 +393,83 @@ class HiPotTesterApp:
             self.confirm_button.config(state="disabled", bg="#AAAAAA")
             self.model_combo.focus()
 
-        tk.Button(
-            btn_frame,
-            text="✓  TAK",
-            bg=self.config.COLOR_ACCENT, fg=self.config.COLOR_WHITE,
-            font=("Arial", 13, "bold"),
-            width=12, height=2,
-            relief=tk.FLAT, cursor="hand2",
-            command=on_yes
-        ).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="✓  TAK", bg=self.config.COLOR_ACCENT,
+                  fg=self.config.COLOR_WHITE, font=("Arial", 13, "bold"),
+                  width=12, height=2, relief=tk.FLAT, cursor="hand2",
+                  command=on_yes).pack(side=tk.LEFT, padx=10)
 
-        tk.Button(
-            btn_frame,
-            text="✗  NIE",
-            bg=self.config.COLOR_ERROR, fg=self.config.COLOR_WHITE,
-            font=("Arial", 13, "bold"),
-            width=12, height=2,
-            relief=tk.FLAT, cursor="hand2",
-            command=on_no
-        ).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="✗  NIE", bg=self.config.COLOR_ERROR,
+                  fg=self.config.COLOR_WHITE, font=("Arial", 13, "bold"),
+                  width=12, height=2, relief=tk.FLAT, cursor="hand2",
+                  command=on_no).pack(side=tk.LEFT, padx=10)
 
-        # Skróty klawiszowe
         dialog.bind("<Return>", lambda e: on_yes())
         dialog.bind("<Escape>", lambda e: on_no())
+        dialog.protocol("WM_DELETE_WINDOW", on_no)
 
     def _process_serial(self):
+        # POPRAWKA: przejście na ekran testu było opóźnione o 800 ms, a pole
+        # i przycisk zostawały aktywne — dwa szybkie skany/kliknięcia
+        # tworzyły dwa ekrany testu i dwa połączenia z tym samym portem COM.
+        if getattr(self, "_transition_pending", False):
+            return
+
         model_key = self.selected_model.get()
         serial = self.serial_entry.get().strip().upper()
 
         if not model_key:
-            self.scan_status_label.config(
-                text="Najpierw wybierz model!",
-                fg=self.config.COLOR_ERROR)
+            self.scan_status_label.config(text="Najpierw wybierz model!",
+                                          fg=self.config.COLOR_ERROR)
             return
         if not serial:
-            self.scan_status_label.config(
-                text="Wprowadź numer seryjny!",
-                fg=self.config.COLOR_ERROR)
+            self.scan_status_label.config(text="Wprowadź numer seryjny!",
+                                          fg=self.config.COLOR_ERROR)
             return
 
         valid, message = PowerSupplyModels.validate_serial(model_key, serial)
         if not valid:
-            self.scan_status_label.config(
-                text=f"✗ {message}", fg=self.config.COLOR_ERROR)
+            self.scan_status_label.config(text=f"✗ {message}",
+                                          fg=self.config.COLOR_ERROR)
             self.serial_entry.delete(0, tk.END)
             self.serial_entry.focus()
             return
 
         model_info = PowerSupplyModels.get_model_info(model_key)
+        if not model_info:
+            self.scan_status_label.config(text="✗ Profil modelu zniknął — odśwież listę",
+                                          fg=self.config.COLOR_ERROR)
+            return
+
         model_info_full = {"model_key": model_key, **model_info}
 
+        self._transition_pending = True
+        self.confirm_button.config(state="disabled", bg="#AAAAAA")
+        self.serial_entry.config(state="disabled")
         self.scan_status_label.config(
             text=f"✓ Model: {model_key} | SN: {len(serial)} znaków — OK",
             fg=self.config.COLOR_ACCENT)
 
-        self.root.after(800, lambda: self._show_test_screen(serial, model_info_full))
+        self.root.after(600, lambda: self._show_test_screen(serial, model_info_full))
 
     def _show_test_screen(self, serial, model_info):
         from test_screen import TestScreen
-        ts = TestScreen(self.root, self.config, serial, model_info,
-                        self.current_user, app_ref=self, stats=self.stats)
-        ts.show()
+        self._transition_pending = False
+        self.test_screen = TestScreen(self.root, self.config, serial, model_info,
+                                      self.current_user, app_ref=self, stats=self.stats)
+        self.test_screen.show()
 
     # ------------------------------------------------------------------ #
-    #  POWRÓT DO SKANOWANIA                                                #
+    # POWRÓT DO SKANOWANIA                                                 #
     # ------------------------------------------------------------------ #
     def show_scan_screen(self):
         """Wywoływane z TestScreen przy powrocie do menu."""
+        self.test_screen = None
         for widget in self.root.winfo_children():
             widget.destroy()
-        self._create_header()
-
-        main_frame = tk.Frame(self.root, bg=self.config.COLOR_BG)
-        main_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=(20, 60))
-
-        self._create_scan_panel(main_frame)
-        self._create_footer()
-
-        self._d_press_count = 0
-        self._d_press_timer = None
-        self.root.bind("<Control-Alt-d>", self._on_config_shortcut)
-        self.root.bind("<Control-Alt-D>", self._on_config_shortcut)
+        self._build_scan_view()
 
     # ------------------------------------------------------------------ #
-    #  HEADER / FOOTER                                                     #
+    # HEADER / FOOTER                                                      #
     # ------------------------------------------------------------------ #
     def _create_header(self):
         header = tk.Frame(self.root, bg=self.config.COLOR_PRIMARY, height=70)
@@ -449,8 +501,23 @@ class HiPotTesterApp:
                  font=("Arial", 10, "bold")).pack(side=tk.RIGHT, padx=20, pady=10)
 
     def _logout(self):
-        self.stats.flush()
+        if self.test_screen is not None and getattr(self.test_screen, "test_running", False):
+            messagebox.showwarning("Test w toku",
+                                   "Nie można się wylogować podczas testu.",
+                                   parent=self.root)
+            return
+        if self.stats:
+            try:
+                self.stats.flush()
+            except Exception:
+                pass
+        for seq in ("<Control-Alt-d>", "<Control-Alt-D>"):
+            try:
+                self.root.unbind(seq)
+            except Exception:
+                pass
         self.current_user = None
+        self.test_screen = None
         for widget in self.root.winfo_children():
             widget.destroy()
         self._show_login_screen()

@@ -251,5 +251,23 @@
       "frequency": 50,
       "arc_detection": 0.0
     }
-  }
+  },
+      "PSU-000049-00": {
+        "name": "PSU-000049-00",
+        "identifier": "",
+        "description": "Zasilacz PSU-000049-00",
+        "serial_length": [10, 21],
+        "test_params": {
+            "mode": "DC",
+            "voltage": 4242,
+            "voltage_tolerance": 50,
+            "current_limit_high": 3.5,
+            "current_limit_low": 0.0,
+            "ramp_time": 0.0,
+            "test_time": 1.0,
+            "fall_time": 0.0,
+            "frequency": 50,
+            "arc_detection": 0.0
+        }
+    }
 }

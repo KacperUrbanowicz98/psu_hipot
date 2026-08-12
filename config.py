@@ -1,6 +1,10 @@
 # config.py
 """Konfiguracja aplikacji"""
+import os
+
+from app_paths import app_dir
 from settings_manager import SettingsManager
+
 
 class Config:
     # Kolory
@@ -16,9 +20,9 @@ class Config:
     WINDOW_TITLE = "Reconext Hi-Pot Tester"
 
     # RS232 — Chroma Hi-Pot
-    DEFAULT_COM_PORT    = "COM6"
-    DEFAULT_BAUDRATE    = 9600
-    DEFAULT_PARITY      = "NONE"
+    DEFAULT_COM_PORT     = "COM6"
+    DEFAULT_BAUDRATE     = 9600
+    DEFAULT_PARITY       = "NONE"
     DEFAULT_FLOW_CONTROL = "NONE"
 
     # Interlock — Arduino
@@ -28,7 +32,7 @@ class Config:
 
     # Inne
     AUTO_SAVE_RESULTS = True
-    TEST_TIMEOUT      = 300
+    TEST_TIMEOUT      = 300      # [s] twardy limit czasu jednego testu
     LOG_DIR           = "logs"
 
     # Autoryzowani operatorzy (fallback — nadpisywane z operators.json)
@@ -42,5 +46,17 @@ class Config:
 
     def __init__(self):
         sm = SettingsManager()
-        self.AUTHORIZED_USERS = sm.load_operators(self.AUTHORIZED_USERS)
+        # Kopia listy — bez tego panel administratora modyfikowałby
+        # atrybut KLASY, wspólny dla wszystkich instancji Config.
+        self.AUTHORIZED_USERS = list(sm.load_operators(Config.AUTHORIZED_USERS))
         sm.load_config(self)
+
+        # Ścieżka względna ("logs") musi być liczona od katalogu aplikacji,
+        # a nie od katalogu roboczego procesu.
+        self.LOG_DIR = self.resolve_log_dir()
+
+    def resolve_log_dir(self) -> str:
+        path = (self.LOG_DIR or "logs").strip()
+        if not os.path.isabs(path) and not path.startswith("\\\\"):
+            path = os.path.join(app_dir(), path)
+        return path
