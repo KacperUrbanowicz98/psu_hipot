@@ -8,8 +8,8 @@ def create_version_file():
     """Tworzy plik z metadanymi EXE — poprawia reputację w antywirusach."""
     content = """VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 1, 0, 0),
-    prodvers=(1, 1, 0, 0),
+    filevers=(1, 1, 2, 0),
+    prodvers=(1, 1, 2, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -22,12 +22,12 @@ def create_version_file():
       StringTable('040904B0', [
         StringStruct('CompanyName', 'Reconext'),
         StringStruct('FileDescription', 'Hi-Pot PSU Tester'),
-        StringStruct('FileVersion', '1.1.0.0'),
+        StringStruct('FileVersion', '1.1.2.0'),
         StringStruct('InternalName', 'Hi-Pot PSU'),
         StringStruct('LegalCopyright', 'Reconext 2026'),
         StringStruct('OriginalFilename', 'Hi-Pot PSU.exe'),
         StringStruct('ProductName', 'Reconext Hi-Pot PSU'),
-        StringStruct('ProductVersion', '1.1.0.0'),
+        StringStruct('ProductVersion', '1.1.2.0'),
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

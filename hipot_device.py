@@ -23,6 +23,21 @@ PASS_JUDGMENT_CODE = 116
 # Stany zwracane przez SAFEty:STATus? które oznaczają, że test się zakończył.
 _FINISHED_TOKENS = ("STOP", "PASS", "FAIL", "READY", "OFF")
 
+# Zwracane przez get_status(), gdy urządzenie w ogóle nie odpowiedziało.
+# Wcześniej był to "TESTING" — przez co brak odpowiedzi wyglądał tak samo
+# jak potwierdzony test w toku.
+STATUS_NO_RESPONSE = "NO_RESPONSE"
+
+
+def fmt_num(value) -> str:
+    """
+    Liczba dla SCPI bez notacji wykładniczej.
+    str(0.01 / 1000) daje '1e-05' — nie każdy firmware Chromy to przyjmuje,
+    a odrzucona komenda LIMit:LOW zostawiała w urządzeniu stary limit (np. 0).
+    """
+    s = f"{float(value):.7f}".rstrip("0").rstrip(".")
+    return s if s not in ("", "-0") else "0"
+
 
 class ChromaHiPotDevice:
     """Klasa obsługująca komunikację z testerem Hi-Pot Chroma przez RS232"""
@@ -187,28 +202,85 @@ class ChromaHiPotDevice:
         """Zwraca True gdy wszystkie komendy poszły bez wyjątku."""
         mode = (mode or "AC").upper()
         try:
+            # Opróżnij kolejkę błędów, żeby SYST:ERR? po konfiguracji
+            # pokazywał błędy TEJ konfiguracji, a nie stare.
+            self._drain_errors()
+
             if mode in ("AC", "DC"):
-                self.send_command(f"SAFEty:STEP{step}:{mode}:LEVel {params.get('voltage', 1000)}")
-                self.send_command(f"SAFEty:STEP{step}:{mode}:LIMit:HIGH {params.get('current_limit_high', 0.005)}")
-                self.send_command(f"SAFEty:STEP{step}:{mode}:LIMit:LOW {params.get('current_limit_low', 0.0)}")
-                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:TEST {params.get('duration', 60)}")
-                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:RAMP {params.get('ramp_time', 0)}")
-                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:FALL {params.get('fall_time', 0)}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:LEVel {fmt_num(params.get('voltage', 1000))}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:LIMit:HIGH {fmt_num(params.get('current_limit_high', 0.005))}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:LIMit:LOW {fmt_num(params.get('current_limit_low', 0.0))}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:TEST {fmt_num(params.get('duration', 60))}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:RAMP {fmt_num(params.get('ramp_time', 0))}")
+                self.send_command(f"SAFEty:STEP{step}:{mode}:TIME:FALL {fmt_num(params.get('fall_time', 0))}")
             elif mode == "IR":
-                self.send_command(f"SAFEty:STEP{step}:IR:LEVel {params.get('voltage', 500)}")
-                self.send_command(f"SAFEty:STEP{step}:IR:LIMit {params.get('resistance_limit', 300000)}")
-                self.send_command(f"SAFEty:STEP{step}:IR:TIME:TEST {params.get('duration', 3)}")
+                self.send_command(f"SAFEty:STEP{step}:IR:LEVel {fmt_num(params.get('voltage', 500))}")
+                self.send_command(f"SAFEty:STEP{step}:IR:LIMit {fmt_num(params.get('resistance_limit', 300000))}")
+                self.send_command(f"SAFEty:STEP{step}:IR:TIME:TEST {fmt_num(params.get('duration', 3))}")
             else:
                 raise ValueError(f"Nieobsługiwany tryb testu: {mode}")
 
-            err = self.query("SYST:ERR?")
-            if err and not self._error_is_ok(err):
-                print(f"[HIPOT] Konfiguracja zgłosiła błąd: '{err}'")
+            # Sprawdzamy CAŁĄ kolejkę błędów — wcześniej czytany był tylko
+            # pierwszy wpis, więc odrzucony LIMit:LOW mógł przejść niezauważony.
+            errors = self._drain_errors()
+            if errors:
+                print(f"[HIPOT] Konfiguracja zgłosiła błędy: {errors}")
+                return False
+
+            if mode in ("AC", "DC") and not self._verify_limits(step, mode, params):
                 return False
             return True
         except Exception as e:
             print(f"[HIPOT] Błąd konfiguracji kroku: {e}")
             return False
+
+    def _drain_errors(self, max_reads: int = 10) -> list:
+        """Czyta SYST:ERR? aż do '0,No error'. Zwraca listę błędów."""
+        errors = []
+        for _ in range(max_reads):
+            err = self.query("SYST:ERR?")
+            if err is None or self._error_is_ok(err):
+                break
+            errors.append(err)
+        return errors
+
+    def _verify_limits(self, step: int, mode: str, params: Dict) -> bool:
+        """
+        Odczyt zwrotny napięcia i limitów prądu z Chromy.
+        Rozbieżność = konfiguracja nieudana (test zostanie zablokowany).
+        Brak odpowiedzi na zapytanie (firmware go nie obsługuje) — tylko
+        ostrzeżenie w konsoli; wtedy chroni nas kontrola wyniku w aplikacji.
+        """
+        checks = (
+            ("LEVel",      params.get("voltage", 0)),
+            ("LIMit:HIGH", params.get("current_limit_high", 0)),
+            ("LIMit:LOW",  params.get("current_limit_low", 0)),
+        )
+        ok = True
+        for key, expected in checks:
+            resp = self.query(f"SAFEty:STEP{step}:{mode}:{key}?")
+            parts = self._parse(resp)
+            if not parts:
+                print(f"[HIPOT] Odczyt zwrotny {key}: brak odpowiedzi — pomijam")
+                continue
+            try:
+                actual = float(parts[0])
+            except ValueError:
+                print(f"[HIPOT] Odczyt zwrotny {key}: nieczytelne '{resp}' — pomijam")
+                continue
+            expected = float(expected)
+            # Firmware może odpowiadać w innej jednostce (V/kV, A/mA) —
+            # wartość przeskalowana o 1000 też potwierdza poprawne ustawienie.
+            matched = any(
+                abs(actual - expected * k) <= max(abs(expected * k) * 0.02, 1e-7)
+                for k in (1.0, 1000.0, 0.001))
+            if not matched:
+                print(f"[HIPOT] Odczyt zwrotny {key}: ustawiono {expected}, "
+                      f"urządzenie ma {actual} — BŁĄD KONFIGURACJI")
+                ok = False
+            else:
+                print(f"[HIPOT] Odczyt zwrotny {key}: {actual} OK")
+        return ok
 
     @staticmethod
     def _error_is_ok(err: str) -> bool:
@@ -257,14 +329,16 @@ class ChromaHiPotDevice:
 
     def get_status(self) -> str:
         """
-        Zwraca znormalizowany stan. Przy braku odpowiedzi zwraca 'TESTING',
-        żeby nie przerywać testu na pojedynczym zgubionym pakiecie —
-        wykrywanie zerwanej komunikacji robi licznik comm_errors.
+        Zwraca znormalizowany stan.
+        Brak odpowiedzi → STATUS_NO_RESPONSE (nie kończy testu, ale też NIE
+        jest dowodem, że test trwa). Zerwaną komunikację wykrywa comm_errors.
+        Odpowiedź spoza listy stanów końcowych → 'TESTING' (urządzenie
+        odpowiedziało czymś innym niż STOP/PASS/FAIL, więc test trwa).
         """
         try:
             response = self.query("SAFEty:STATus?")
             if not response:
-                return "TESTING"
+                return STATUS_NO_RESPONSE
             s = response.strip().upper()
             for token in _FINISHED_TOKENS + ("TESTING", "RUNNING", "WAIT"):
                 if token in s:
@@ -273,7 +347,14 @@ class ChromaHiPotDevice:
             return "TESTING"
         except Exception as e:
             print(f"[HIPOT] Błąd pobierania statusu: {e}")
-            return "TESTING"
+            return STATUS_NO_RESPONSE
+
+    @staticmethod
+    def status_is_running(status: str) -> bool:
+        """Potwierdzona odpowiedź urządzenia, że test trwa."""
+        if not status or status == STATUS_NO_RESPONSE:
+            return False
+        return not ChromaHiPotDevice.status_is_finished(status)
 
     @staticmethod
     def status_is_finished(status: str) -> bool:
@@ -398,7 +479,7 @@ class ChromaHiPotDevice:
         print("\n[6] Konfiguracja...")
         ok = self.configure_test(1, "AC", {
             "voltage": 3000, "current_limit_high": 0.0025,
-            "current_limit_low": 0.0, "duration": 1.0,
+            "current_limit_low": 0.0003, "duration": 1.0,
             "ramp_time": 0.5, "fall_time": 0.5})
         print(f"    configure_test() = {ok}")
 
@@ -416,7 +497,7 @@ class ChromaHiPotDevice:
             stat = self.get_status()
             meas = self.read_measurements()
             print(f"    t={i * 0.5:.1f}s  stat='{stat}'  meas={meas}")
-            if self.status_is_finished(stat):
+            if i > 0 and self.status_is_finished(stat):
                 print("    >>> ZAKOŃCZONY")
                 break
 

@@ -13,6 +13,13 @@ Najważniejsze poprawki względem wersji pierwotnej opisane są komentarzami
      (poprzednio ginął w NameError i ekran wisiał na "Test w toku").
   6. Nieudany zapis raportu jest widoczny i ma kopię awaryjną.
   7. Statystyki liczone są w tle i z pamięcią podręczną.
+  8. PASS z Chromy jest weryfikowany przez aplikację (result_validator.py):
+     test musi się faktycznie wykonać, napięcie i prąd muszą być w limitach
+     profilu. Wcześniej PASS bez podłączonego zasilacza (Vtm 0 kV, Im 0 mA)
+     trafiał do raportu IFS.
+  9. Test jest zablokowany, gdy konfiguracja kroku w Chromie się nie powiodła
+     (wcześniej był tylko pomarańczowy komunikat, a test i tak ruszał na
+     programie zapisanym w urządzeniu).
 """
 import os
 import queue
@@ -24,6 +31,7 @@ from datetime import date, datetime
 from tkinter import messagebox, ttk
 
 from logger import save_report
+from result_validator import INVALID, PASS, RunEvidence, validate
 from shift_stats import ShiftStats, get_current_shift, parse_shift_file
 
 # Ile kolejnych nieudanych transakcji RS232 uznajemy za zerwaną komunikację
@@ -56,6 +64,17 @@ class TestScreen:
 
         self.last_valid_voltage = 0.0
         self.last_valid_current = 0.0
+
+        # POPRAWKA: test dozwolony tylko przy potwierdzonej konfiguracji kroku.
+        self._device_configured = False
+        # Co zaobserwowano w trakcie bieżącego cyklu (dowód wykonania testu).
+        self._run_evidence = RunEvidence()
+
+        # True po zapisaniu wyniku (PASS/FAIL) bieżącego SN. Blokuje kolejny
+        # start, dopóki operator nie zeskanuje nowego SN — po zamknięciu okna
+        # "Następny numer seryjny" zamknięcie klapy nie może uruchomić testu
+        # nowej sztuki pod starym numerem.
+        self._serial_consumed = False
 
         self.interlock              = None
         self._prev_interlock_closed = None
@@ -502,6 +521,7 @@ class TestScreen:
             return
 
         self.device = device
+        self._device_configured = bool(ok and cfg_ok)
         self._ui(self._on_device_ready, ok, cfg_ok)
 
     def _on_device_ready(self, ok: bool, cfg_ok: bool):
@@ -510,10 +530,12 @@ class TestScreen:
                       text="✓ Urządzenie skonfigurowane i gotowe",
                       fg=self.config.COLOR_ACCENT)
         elif ok:
+            # POPRAWKA: wcześniej test i tak można było uruchomić — Chroma
+            # testowała wtedy na programie zapisanym w pamięci (np. LOW = 0).
             self._cfg(self.status_label,
-                      text="⚠ Połączono, ale konfiguracja kroku nie powiodła się "
-                           "— sprawdź profil i urządzenie",
-                      fg="#FF9800")
+                      text="✗ Konfiguracja kroku w Hi-Pot nie powiodła się — "
+                           "test ZABLOKOWANY. Wróć do menu i wejdź ponownie.",
+                      fg=self.config.COLOR_ERROR)
         else:
             self._cfg(self.status_label,
                       text=f"✗ Błąd połączenia z Hi-Pot ({self.config.DEFAULT_COM_PORT})",
@@ -1144,6 +1166,23 @@ class TestScreen:
             self._pending_start = False
             return
 
+        if self._serial_consumed:
+            self._cfg(self.status_label,
+                      text="➜ Wynik tego SN jest już zapisany — kliknij "
+                           "„Następny SN” i zeskanuj kolejną sztukę",
+                      fg="#FF9800")
+            self._cfg(self.start_button, state="disabled")
+            self._pending_start = False
+            return
+
+        if not self._device_configured:
+            self._cfg(self.status_label,
+                      text="✗ Hi-Pot nie jest skonfigurowany — test zablokowany. "
+                           "Wróć do menu i wejdź ponownie.",
+                      fg=self.config.COLOR_ERROR)
+            self._pending_start = False
+            return
+
         if self._interlock_active():
             state = self.interlock.is_closed
             if state is not True:
@@ -1168,6 +1207,15 @@ class TestScreen:
         self._abort_reason = ""
         self.test_running = True
         self.start_time = time.time()
+
+        # Dowody wykonania i "ostatnie poprawne" pomiary liczone od zera dla
+        # KAŻDEGO cyklu — inaczej powtórny test tej samej sztuki dziedziczył
+        # wartości z poprzedniej próby.
+        self._run_evidence = RunEvidence()
+        self.last_valid_voltage = 0.0
+        self.last_valid_current = 0.0
+        self.current_voltage = 0.0
+        self.current_current = 0.0
 
         self._cfg(self.sn_display_label, text=self.serial_number)
         self._cfg(self.start_button, state="disabled")
@@ -1195,8 +1243,12 @@ class TestScreen:
                              min(float(getattr(self.config, "TEST_TIMEOUT", 300)),
                                  total_time + 60))
             min_run_time = min(2.0, max(0.5, total_time))
+            evidence = self._run_evidence
 
-            time.sleep(min(1.5, max(0.3, total_time / 2)))
+            # POPRAWKA: było czekanie do 1,5 s przed pierwszym odczytem — przy
+            # teście 1 s można było przegapić cały stan RUNNING. Teraz
+            # odpytujemy od razu, a koniec testu nadal blokuje min_run_time.
+            time.sleep(0.15)
             if not self.test_running or self._abort_requested:
                 return
 
@@ -1204,6 +1256,8 @@ class TestScreen:
             while self.test_running and not self._abort_requested:
                 status = self.device.get_status()
                 elapsed = time.time() - self.start_time
+                if self.device.status_is_running(status):
+                    evidence.saw_running = True
 
                 if self.device.comm_errors >= MAX_COMM_ERRORS:
                     self.test_running = False
@@ -1225,8 +1279,10 @@ class TestScreen:
                     self.current_current = i
                     if 0 < v < 1e6:
                         self.last_valid_voltage = v
+                        evidence.peak_voltage = max(evidence.peak_voltage, v)
                     if 0 < i < 9999:
                         self.last_valid_current = i
+                        evidence.peak_current_ma = max(evidence.peak_current_ma, i)
 
                 self.elapsed_time = time.time() - self.start_time
                 self._schedule_display_update()
@@ -1291,53 +1347,68 @@ class TestScreen:
             self.test_error("Utracono połączenie z urządzeniem przed odczytem wyniku")
             return
 
-        result, data = self.device.get_test_result()
+        device_result, data = self.device.get_test_result()
+        p = self.model_info["test_params"]
+
+        # POPRAWKA: PASS z Chromy nie jest już przyjmowany bezwarunkowo.
+        # W logach były raporty PASS z Vtm 0.000 kV / Im 0.000 mA — test bez
+        # podłączonego zasilacza albo w ogóle niewykonany (SAFEty:RESult:LAST
+        # zwraca ostatni zapamiętany wynik). Ocena w result_validator.py.
+        ev = self._run_evidence
+        verdict = validate(device_result, data, p, ev)
+        result = verdict.result
         self.test_result = result
+        print(f"[TEST] Chroma={device_result} → aplikacja={result} "
+              f"(running={ev.saw_running}, peakV={ev.peak_voltage:.0f}, "
+              f"peakI={ev.peak_current_ma:.3f} mA, V={verdict.voltage_v:.0f}, "
+              f"I={verdict.current_ma:.3f} mA) {verdict.reason}")
 
         self._cfg(self.start_button, state="disabled")
         self._cfg(self.stop_button, state="disabled")
         self._cfg(self.back_button, state="normal")
         self._cfg(self.next_sn_button, state="normal")
 
-        # POPRAWKA: brak odpowiedzi urządzenia był raportowany jako FAIL.
-        # Usterka RS232 wyglądała wtedy jak wadliwy zasilacz i trafiała
-        # do logów IFS. Teraz to jawny błąd — sztukę trzeba przetestować
-        # ponownie, nic nie jest zapisywane.
-        if result == "UNKNOWN":
+        # Test nieważny (brak odpowiedzi / test niewykonany) — nic nie jest
+        # zapisywane ani liczone, sztukę trzeba przetestować ponownie.
+        # Celowo NIE FAIL: usterka łącza RS232 nie może wyglądać w IFS
+        # jak wadliwy zasilacz.
+        if result == INVALID:
             self._cfg(self.status_label,
-                      text="✗ BRAK WYNIKU Z URZĄDZENIA — powtórz test (nie zapisano)",
+                      text="✗ TEST NIEWAŻNY — powtórz test (nie zapisano)",
                       fg=self.config.COLOR_ERROR)
             messagebox.showerror(
-                "Brak wyniku",
-                "Urządzenie Hi-Pot nie zwróciło wyniku testu.\n"
-                "Sztuka NIE została zapisana — powtórz test.\n\n"
-                "Jeśli problem się powtarza, sprawdź kabel RS232 i port COM.",
+                "Test nieważny",
+                f"{verdict.reason}\n\n"
+                "Sztuka NIE została zapisana — sprawdź podłączenie zasilacza "
+                "i powtórz test.\n\n"
+                "Jeśli problem się powtarza, sprawdź kabel RS232, port COM "
+                "oraz czy Chroma jest w trybie zdalnym.",
                 parent=self.parent)
             self.parent.after(300, lambda: self.show_result_and_next_serial(
-                "BRAK WYNIKU", data))
+                "NIEWAŻNY", data))
             return
 
-        if result == "PASS":
+        if result == PASS:
             self._cfg(self.status_label, text="✓ TEST ZALICZONY (PASS)",
                       fg=self.config.COLOR_ACCENT)
         else:
-            self._cfg(self.status_label, text="✗ TEST NIEZALICZONY (FAIL)",
-                      fg=self.config.COLOR_ERROR)
+            txt = "✗ TEST NIEZALICZONY (FAIL)"
+            if device_result == PASS:
+                # Chroma dała PASS, aplikacja go odrzuciła — pokaż dlaczego.
+                txt += f" — {verdict.reason}"
+            self._cfg(self.status_label, text=txt, fg=self.config.COLOR_ERROR)
 
-        p = self.model_info["test_params"]
-        error_code = str(data.get("error_code", "")) if data else ""
+        error_code = verdict.error_code
         is_dup = bool(self._current_sn_is_duplicate)
+        self._serial_consumed = True
 
         # ── Wartości do raportu ──────────────────────────────────────────
-        # POPRAWKA JEDNOSTEK: hipot_device.get_test_result() zwraca prąd już
-        # w mA. Poprzednia wersja mnożyła go tu jeszcze raz przez 1000,
-        # więc w raporcie dla IFS prąd był 1000× za duży
-        # (np. 0,500 mA zapisywane jako 500,000 mA).
-        raw_v  = float(data.get("output_voltage", 0.0) or 0.0)          # [V]
-        raw_ma = float(data.get("measured_current_ma", 0.0) or 0.0)     # [mA]
-
-        vtm_val = (raw_v / 1000.0) if 0 < raw_v < 1e6 else (self.last_valid_voltage / 1000.0)
-        im_val  = raw_ma if 0 < raw_ma < 9999 else self.last_valid_current
+        # Prąd z hipot_device.get_test_result() jest już w mA. Raport dostaje
+        # wartości, na podstawie których zapadła ocena — bez podstawiania
+        # pomiarów z poprzednich prób (wcześniej Im = 0 z pustego testu było
+        # zastępowane "ostatnim poprawnym" prądem).
+        vtm_val = verdict.voltage_v / 1000.0       # [kV]
+        im_val  = verdict.current_ma               # [mA]
 
         log_ok, log_msg = self._write_report(p, result, error_code, vtm_val, im_val)
 
@@ -1562,6 +1633,8 @@ class TestScreen:
             self._maybe_start_test()
         else:
             self._current_sn_is_duplicate = False
+            # Odrzucony SN nie może zostać przetestowany po zamknięciu okna.
+            self._serial_consumed = True
             self._cfg(self.status_label,
                       text="Test anulowany — zeskanuj inny numer seryjny",
                       fg="#666666")
@@ -1595,6 +1668,7 @@ class TestScreen:
             return False
 
         self._current_sn_is_duplicate = False
+        self._serial_consumed = False
         self.serial_number = new_serial
         self._cfg(self.sn_display_label, text=self.serial_number)
 
@@ -1637,12 +1711,15 @@ class TestScreen:
 
         dialog = tk.Toplevel(self.parent)
         dialog.title("Następny numer seryjny")
-        dialog.geometry("460x340")
+        dialog.geometry("460x390")
         dialog.configure(bg=self.config.COLOR_WHITE)
         dialog.transient(self.parent)
         dialog.grab_set()
         dialog.resizable(False, False)
-        dialog.protocol("WM_DELETE_WINDOW", self._back_to_menu_from_dialog)
+        # POPRAWKA: krzyżyk zamyka tylko okno i zostawia ekran testu
+        # (wcześniej wracał do menu, przez co nie dało się wejść
+        # w Statystyki). Powrót do menu — osobnym przyciskiem.
+        dialog.protocol("WM_DELETE_WINDOW", self._close_sn_dialog)
 
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
@@ -1699,7 +1776,41 @@ class TestScreen:
                   relief=tk.FLAT, cursor="hand2",
                   command=self._back_to_menu_from_dialog).pack(side=tk.LEFT, padx=5)
 
+        tk.Button(dialog, text="📊 Statystyki",
+                  bg="#607D8B", fg=self.config.COLOR_WHITE,
+                  font=("Arial", 10, "bold"), width=16,
+                  relief=tk.FLAT, cursor="hand2",
+                  command=self._stats_from_dialog).pack(pady=(0, 10))
+
         self.sn_entry.bind("<Return>", lambda e: self._arm_next_test_from_dialog())
+
+    def _close_sn_dialog(self):
+        """Zamyka okno skanowania i zostaje na ekranie testu."""
+        if self._dialog_open():
+            try:
+                self.sn_dialog.grab_release()
+                self.sn_dialog.destroy()
+            except Exception:
+                pass
+        self.sn_dialog = None
+        self.sn_entry = None
+        self.sn_result_label = None
+        self.sn_status_lbl = None
+        self._dup_banner = None
+        if not self.test_running:
+            self._cfg(self.next_sn_button, state="normal")
+            self._cfg(self.back_button, state="normal")
+            if self._serial_consumed:
+                self._cfg(self.start_button, state="disabled")
+                self._cfg(self.status_label,
+                          text="➜ Kliknij „Następny SN”, aby zeskanować kolejną sztukę",
+                          fg="#666666")
+
+    def _stats_from_dialog(self):
+        # Okno SN trzyma grab — statystyki otwierane po jego zamknięciu,
+        # inaczej nowe okno nie reagowałoby na kliknięcia.
+        self._close_sn_dialog()
+        self._show_daily_stats()
 
     def update_sn_dialog(self, result):
         if self._dup_banner is not None:

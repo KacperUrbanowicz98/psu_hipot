@@ -228,9 +228,16 @@ class PowerSupplyModels:
         if not serial_number:
             return False, "Pusty numer seryjny"
 
-        # Skaner potrafi wysłać znaki sterujące / spacje w środku kodu.
-        if any(ch.isspace() for ch in serial_number):
-            return False, "SN zawiera spację — zeskanuj ponownie"
+        # Pojedyncza spacja w środku jest dozwolona — etykiety PSU-000013-00
+        # i PSU-000019-00 mają format "SSW-3344EU 24BC301844" (21 znaków).
+        # Odrzucamy natomiast to, co wysyła źle skonfigurowany/zakłócony
+        # skaner: tabulatory, znaki nowej linii, znaki sterujące i podwójne
+        # spacje.
+        if any(ch.isspace() and ch != " " for ch in serial_number) \
+                or any(not ch.isprintable() for ch in serial_number):
+            return False, "SN zawiera niedozwolone znaki — zeskanuj ponownie"
+        if "  " in serial_number:
+            return False, "SN zawiera podwójną spację — zeskanuj ponownie"
 
         expected = model.get("serial_length", [])
         if isinstance(expected, int):

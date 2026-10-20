@@ -462,6 +462,18 @@ class AdminPanel:
                 err_label.config(text="Popraw: " + "; ".join(problems))
                 return
 
+            # Limit LOW = 0 oznacza, że niepodłączony zasilacz (prąd ~0 mA)
+            # przejdzie test jako PASS — wymagamy świadomego potwierdzenia.
+            if v_mode.get() in ("AC", "DC") and ilow == 0:
+                if not messagebox.askyesno(
+                        "Limit LOW = 0 mA",
+                        "Limit LOW wynosi 0 mA.\n\n"
+                        "Test NIE wykryje niepodłączonego zasilacza ani braku "
+                        "styku — taka sztuka dostanie PASS.\n\n"
+                        "Zapisać profil mimo to?",
+                        icon="warning", parent=dialog):
+                    return
+
             new_model = {
                 "name":          name,
                 "identifier":    existing.get("identifier", ""),

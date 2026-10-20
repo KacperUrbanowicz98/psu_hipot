@@ -19,6 +19,9 @@ ERROR_CODES = {
     "128": "IR High Fail",
     "256": "ADV Over",
     "512": "ADI Over",
+    # Kody nadawane przez kontrolę wyniku w aplikacji (result_validator.py)
+    "APP-V":    "Output voltage out of tolerance (app check)",
+    "APP-DCLO": "DC Mode Low Fail (app check)",
 }
 
 

@@ -1,0 +1,27 @@
+Hi-Pot PSU — v1.1.1 — poprawka: PASS bez podłączonego zasilacza
+
+PRZYCZYNA
+W logach aplikacji były raporty PASS z Vtm 0.000 kV / Im 0.000 mA.
+Aplikacja ufała wyłącznie kodowi oceny z Chromy (RESult:LAST:JUDG? = 116).
+"LAST" zwraca ostatni zapamiętany wynik, więc gdy test się nie wykonał
+(START nie ruszył / status odczytany zanim test wystartował) zapisywany był
+pusty PASS albo PASS poprzedniej sztuki. Dodatkowo nieudana konfiguracja
+kroku nie blokowała testu — Chroma testowała na programie z pamięci.
+
+ZMIANY
+- result_validator.py (NOWY): niezależna ocena wyniku. PASS z Chromy jest
+  akceptowany tylko gdy test faktycznie się wykonał (stan RUNNING albo
+  napięcie >= 50% nastawy w trakcie), napięcie mieści się w tolerancji
+  profilu, a prąd w [LOW, HIGH]. FAIL z Chromy zawsze zostaje FAIL.
+  Test niewykonany -> "TEST NIEWAŻNY", nic nie jest zapisywane ani liczone.
+- test_screen.py: odpytywanie statusu od razu po START (było do 1,5 s
+  opóźnienia); test zablokowany przy nieudanej konfiguracji; raport zawiera
+  wartości, na podstawie których zapadła ocena (bez podstawiania prądu
+  z poprzedniej próby).
+- hipot_device.py: liczby w SCPI bez notacji wykładniczej (0.01 mA było
+  wysyłane jako 1e-05); odczytywana cała kolejka SYST:ERR?; odczyt zwrotny
+  LEVel/LIMit:HIGH/LIMit:LOW po konfiguracji; brak odpowiedzi na status nie
+  jest już traktowany jak "test trwa".
+- logger.py: nowe kody błędów APP-V (napięcie poza tolerancją) i APP-DCLO.
+- admin_panel.py: ostrzeżenie przy zapisie profilu z limitem LOW = 0 mA.
+- create_exe.py: wersja 1.1.1.0.
